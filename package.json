@@ -1,0 +1,25 @@
+{
+  "name": "ielts-speaking-platform",
+  "private": true,
+  "packageManager": "pnpm@9.12.3",
+  "scripts": {
+    "lint:web": "pnpm --filter @ielts-speaking/web lint",
+    "typecheck:web": "pnpm --filter @ielts-speaking/web typecheck",
+    "test:api": "cd services/api-go && go test ./...",
+    "test:agent": "python -m pytest services/agent-harness/tests",
+    "test:speech": "python -m pytest services/speech-assessment/tests",
+    "eval:speech-calibration:contract": "cd services/agent-harness && python -m app.evals.speech_eval_cli calibration --contract-samples --allow-synthetic-contract --min-production-samples 0 --stdout-format summary",
+    "eval:multipa:contract": "cd services/agent-harness && python -m app.evals.speech_eval_cli multipa --contract-samples --contract-multipa-outputs --stdout-format summary",
+    "backup:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify_backup_manifest.ps1",
+    "protocol:validate": "node packages/protocol/scripts/validate-schemas.mjs",
+    "db:migrate": "cd services/api-go && go run ./cmd/api migrate up",
+    "db:status": "cd services/api-go && go run ./cmd/api migrate status",
+    "migration:audit": "powershell -ExecutionPolicy Bypass -File scripts/audit_migrations.ps1",
+    "migration:status:evidence": "powershell -ExecutionPolicy Bypass -File scripts/capture_migration_status.ps1",
+    "release:record": "powershell -ExecutionPolicy Bypass -File scripts/generate_release_record.ps1",
+    "release:record:example": "powershell -ExecutionPolicy Bypass -File scripts/verify_release_record_example.ps1",
+    "compose:config": "docker compose config",
+    "compose:staging:config": "docker compose -f docker-compose.yml -f docker-compose.staging.yml config --quiet",
+    "staging:readiness:example": "powershell -ExecutionPolicy Bypass -File scripts/verify_staging_readiness.ps1 -EnvFile .env.staging.example -AllowExamplePlaceholders -SkipRemoteChecks"
+  }
+}

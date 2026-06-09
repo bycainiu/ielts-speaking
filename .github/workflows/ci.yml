@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate protocol schemas
+        run: pnpm --filter @ielts-speaking/protocol validate
+
+      - name: Lint web
+        run: pnpm --filter @ielts-speaking/web lint
+
+      - name: Typecheck web
+        run: pnpm --filter @ielts-speaking/web typecheck
+
+      - name: Build web
+        run: pnpm --filter @ielts-speaking/web build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: services/api-go/go.sum
+
+      - name: Test Go API
+        working-directory: services/api-go
+        run: go test ./...
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Agent Harness dependencies
+        run: pip install -r services/agent-harness/requirements.txt
+
+      - name: Test Agent Harness
+        run: python -m pytest services/agent-harness/tests
+
+      - name: Run speech calibration contract gate
+        working-directory: services/agent-harness
+        run: python -m app.evals.speech_eval_cli calibration --contract-samples --allow-synthetic-contract --min-production-samples 0 --stdout-format summary
+
+      - name: Run MultiPA experiment contract gate
+        working-directory: services/agent-harness
+        run: python -m app.evals.speech_eval_cli multipa --contract-samples --contract-multipa-outputs --stdout-format summary
+
+      - name: Install Speech Assessment dependencies
+        run: pip install -r services/speech-assessment/requirements.txt
+
+      - name: Test Speech Assessment
+        run: python -m pytest services/speech-assessment/tests
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Validate Staging Docker Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.staging.yml config --quiet
+
+      - name: Audit migrations
+        shell: pwsh
+        run: ./scripts/audit_migrations.ps1
+
+      - name: Validate staging readiness example
+        shell: pwsh
+        run: ./scripts/verify_staging_readiness.ps1 -EnvFile .env.staging.example -AllowExamplePlaceholders -SkipRemoteChecks
+
+      - name: Validate release record example
+        shell: pwsh
+        run: ./scripts/verify_release_record_example.ps1
+
+      - name: Build api-go image
+        run: docker compose build --pull=false api-go
+
+      - name: Build agent-harness image
+        run: docker compose build --pull=false agent-harness
+
+      - name: Build speech-assessment image
+        run: docker compose build --pull=false speech-assessment
+
+      - name: Build web image
+        run: docker compose build --pull=false web

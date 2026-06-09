@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ielts-speaking.local/schemas/agent-api.schema.json",
+  "title": "AgentApi",
+  "$defs": {
+    "PlanRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "user_id"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["full_exam", "part_practice", "topic_practice"]
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "season_id": {
+          "type": ["string", "null"]
+        },
+        "part": {
+          "type": ["integer", "null"],
+          "enum": [1, 2, 3, null]
+        },
+        "topic_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "topic_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "session_seed": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "user_background": {
+          "type": "object",
+          "default": {}
+        }
+      }
+    },
+    "NextTurnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_state"],
+      "properties": {
+        "session_state": {
+          "type": "object"
+        }
+      }
+    },
+    "ConsumeAsrRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_id", "asr_text"],
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asr_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio_asset_id": {
+          "type": ["string", "null"]
+        },
+        "asr_confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "session_state": {
+          "type": "object",
+          "default": {}
+        }
+      }
+    },
+    "TranscribeAudioRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio_asset_id", "mime_type"],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "exclusiveMinimum": 0
+        },
+        "language_hint": {
+          "type": ["string", "null"],
+          "minLength": 2
+        },
+        "audio_url": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "audio_base64": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "TranscribeAudioResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio_asset_id", "asr_text", "provider", "model", "metadata"],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string"
+        },
+        "asr_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": ["string", "null"]
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": ["integer", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "SynthesizeSpeechRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200
+        },
+        "voice_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "default": "ielts_examiner_default"
+        },
+        "speaking_rate": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 1.5,
+          "default": 1
+        },
+        "emotion": {
+          "type": ["string", "null"],
+          "maxLength": 60,
+          "default": "neutral"
+        },
+        "style": {
+          "type": ["string", "null"],
+          "maxLength": 80,
+          "default": "examiner"
+        }
+      }
+    },
+    "SynthesizeSpeechResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "audio_base64", "mime_type", "provider", "model", "voice_id", "metadata"],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "audio_base64": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "voice_id": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": ["integer", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "AgentResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "events", "state", "next_action"],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "session-event.schema.json"
+          }
+        },
+        "state": {
+          "type": "object"
+        },
+        "next_action": {
+          "type": "string",
+          "enum": ["wait_for_user_answer", "ask_next_question", "score_session", "finish_session", "retry_current_node"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,980 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ielts-speaking.local/schemas/speech-assessment.schema.json",
+  "title": "Speech Assessment Evidence Protocol",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SpeechAssessmentRequest"
+    },
+    {
+      "$ref": "#/$defs/SpeechAssessmentResponse"
+    },
+    {
+      "$ref": "#/$defs/TimestampTranscriptionRequest"
+    },
+    {
+      "$ref": "#/$defs/TimestampTranscriptionResponse"
+    },
+    {
+      "$ref": "#/$defs/PronunciationDrillRequest"
+    },
+    {
+      "$ref": "#/$defs/PronunciationDrillResponse"
+    }
+  ],
+  "$defs": {
+    "WordTimestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["word", "start_ms", "end_ms"],
+      "properties": {
+        "word": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "VadSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "end_ms"],
+      "properties": {
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speech_probability": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "SpeechAssessmentRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio_asset_id", "mode"],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["mock_exam", "pronunciation_drill"]
+        },
+        "session_id": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "turn_id": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "transcript": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "word_timestamps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordTimestamp"
+          },
+          "default": []
+        },
+        "vad_segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VadSegment"
+          },
+          "default": []
+        },
+        "target_text": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "pronunciation_drill"
+              }
+            }
+          },
+          "then": {
+            "required": ["target_text"]
+          }
+        }
+      ]
+    },
+    "TimestampTranscriptionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio_asset_id", "provider"],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["deterministic", "faster_whisper"]
+        },
+        "audio_path": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "audio_url": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "audio_base64": {
+          "type": "string",
+          "maxLength": 80000000
+        },
+        "mime_type": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "language_hint": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16,
+          "default": "en"
+        },
+        "expected_transcript": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "deterministic"
+              }
+            }
+          },
+          "then": {
+            "required": ["expected_transcript"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "faster_whisper"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": ["audio_path"]
+              },
+              {
+                "required": ["audio_base64"]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "TimestampSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_id", "start_ms", "end_ms", "text", "words"],
+      "properties": {
+        "segment_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordTimestamp"
+          }
+        }
+      }
+    },
+    "TimestampTranscriptionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "audio_asset_id",
+        "provider",
+        "model",
+        "transcript",
+        "language",
+        "duration_ms",
+        "word_timestamps",
+        "segments",
+        "asr_confidence",
+        "alignment_confidence",
+        "downstream_confidence",
+        "audio_quality_label",
+        "warnings",
+        "metadata"
+      ],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["deterministic", "faster_whisper"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "word_timestamps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordTimestamp"
+          }
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TimestampSegment"
+          }
+        },
+        "asr_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "alignment_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "downstream_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "audio_quality_label": {
+          "type": "string",
+          "enum": ["unknown", "usable", "low_quality"]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "PhonemeHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["word", "phonemes"],
+      "properties": {
+        "word": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phonemes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "primary_stress_index": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "PronunciationDrillRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audio_asset_id", "target_text"],
+      "properties": {
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "target_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
+        "transcript": {
+          "type": ["string", "null"],
+          "maxLength": 12000
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "word_timestamps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordTimestamp"
+          },
+          "default": []
+        },
+        "phoneme_hints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhonemeHint"
+          },
+          "default": []
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["deterministic_mfa_kaldi_gop", "mfa_adapter", "kaldi_gop_adapter"],
+          "default": "deterministic_mfa_kaldi_gop"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "PronunciationDrillAlignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_word_count",
+        "spoken_word_count",
+        "aligned_word_count",
+        "missing_word_count",
+        "substituted_word_count",
+        "alignment_confidence"
+      ],
+      "properties": {
+        "target_word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "spoken_word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "aligned_word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "substituted_word_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "alignment_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "PronunciationDrillWordFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_index",
+        "target_word",
+        "gop_score",
+        "accuracy",
+        "timing",
+        "stress",
+        "status",
+        "note"
+      ],
+      "properties": {
+        "target_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_word": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spoken_word": {
+          "type": ["string", "null"]
+        },
+        "start_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "gop_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "timing": {
+          "type": "string",
+          "enum": ["unknown", "on_time", "fast", "slow", "missing"]
+        },
+        "stress": {
+          "type": "string",
+          "enum": ["unknown", "acceptable", "needs_review"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["matched", "substituted", "missing"]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "PronunciationDrillPhonemeFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_index", "word", "phoneme", "position", "gop_score", "accuracy", "status", "note"],
+      "properties": {
+        "target_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "word": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phoneme": {
+          "type": "string",
+          "minLength": 1
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gop_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["acceptable", "needs_review", "missing"]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "PronunciationDrillResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "drill_id",
+        "audio_asset_id",
+        "mode",
+        "provider",
+        "model",
+        "target_text",
+        "alignment",
+        "word_feedback",
+        "phoneme_feedback",
+        "confidence",
+        "policy",
+        "warnings"
+      ],
+      "properties": {
+        "drill_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "const": "pronunciation_drill"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["deterministic_mfa_kaldi_gop", "mfa_adapter", "kaldi_gop_adapter"]
+        },
+        "model": {
+          "const": "mfa-kaldi-gop-drill-v0"
+        },
+        "target_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transcript": {
+          "type": ["string", "null"]
+        },
+        "alignment": {
+          "$ref": "#/$defs/PronunciationDrillAlignment"
+        },
+        "word_feedback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PronunciationDrillWordFeedback"
+          }
+        },
+        "phoneme_feedback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PronunciationDrillPhonemeFeedback"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "policy": {
+          "$ref": "#/$defs/AssessmentPolicy"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "AudioQualityEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_ms", "quality_label", "clipping_detected", "confidence"],
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quality_label": {
+          "type": "string",
+          "enum": ["unknown", "usable", "low_quality"]
+        },
+        "clipping_detected": {
+          "type": "boolean"
+        },
+        "estimated_snr_db": {
+          "type": ["number", "null"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "FluencyEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration_sec",
+        "speech_duration_sec",
+        "silence_ratio",
+        "wpm",
+        "long_pause_count",
+        "mean_pause_ms",
+        "filler_count",
+        "filler_ratio",
+        "repetition_count",
+        "self_correction_count",
+        "confidence"
+      ],
+      "properties": {
+        "duration_sec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "speech_duration_sec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "silence_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "wpm": {
+          "type": "number",
+          "minimum": 0
+        },
+        "long_pause_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mean_pause_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filler_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filler_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "repetition_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "self_correction_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "WordPronunciationFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["word", "accuracy", "stress", "note"],
+      "properties": {
+        "word": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stress": {
+          "type": "string",
+          "enum": ["unknown", "acceptable", "needs_review"]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "PhonemePronunciationFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["word", "phoneme", "accuracy", "note"],
+      "properties": {
+        "word": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phoneme": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "GoptEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "sentence_score",
+        "accuracy",
+        "fluency",
+        "prosody",
+        "confidence",
+        "calibration_note"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["deterministic_gopt", "gopt_adapter"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sentence_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "accuracy": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fluency": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "prosody": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "calibration_note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "PronunciationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_level", "confidence", "word_feedback", "phoneme_feedback"],
+      "properties": {
+        "evidence_level": {
+          "type": "string",
+          "enum": ["none", "sentence", "word", "phoneme"]
+        },
+        "sentence_score": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "accuracy": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fluency": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "prosody": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "gopt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoptEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "word_feedback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WordPronunciationFeedback"
+          }
+        },
+        "phoneme_feedback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhonemePronunciationFeedback"
+          }
+        }
+      }
+    },
+    "AssessmentPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ielts_band_output_allowed", "consumer_instruction", "separated_paths"],
+      "properties": {
+        "ielts_band_output_allowed": {
+          "const": false
+        },
+        "consumer_instruction": {
+          "type": "string",
+          "minLength": 1
+        },
+        "separated_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["mock_exam", "pronunciation_drill"]
+          },
+          "contains": {
+            "const": "mock_exam"
+          }
+        }
+      }
+    },
+    "SpeechAssessmentResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "audio_asset_id",
+        "mode",
+        "provider",
+        "model",
+        "audio_quality",
+        "fluency",
+        "pronunciation",
+        "confidence",
+        "policy",
+        "warnings"
+      ],
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio_asset_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["mock_exam", "pronunciation_drill"]
+        },
+        "provider": {
+          "const": "deterministic_speech_assessment"
+        },
+        "model": {
+          "const": "speech-evidence-v0"
+        },
+        "audio_quality": {
+          "$ref": "#/$defs/AudioQualityEvidence"
+        },
+        "fluency": {
+          "$ref": "#/$defs/FluencyEvidence"
+        },
+        "pronunciation": {
+          "$ref": "#/$defs/PronunciationEvidence"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "policy": {
+          "$ref": "#/$defs/AssessmentPolicy"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ielts-speaking.local/schemas/agent-run.schema.json",
+  "title": "AgentRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "session_id", "status", "started_at", "steps"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user_id_hash": {
+      "type": ["string", "null"]
+    },
+    "mode": {
+      "type": ["string", "null"],
+      "enum": ["full_exam", "part_practice", "topic_practice", null]
+    },
+    "part": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 3
+    },
+    "question_id": {
+      "type": ["string", "null"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "completed", "failed", "cancelled"]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AgentStep"
+      }
+    }
+  },
+  "$defs": {
+    "AgentStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "workflow_node", "status", "started_at"],
+      "properties": {
+        "step_id": {
+          "type": "string"
+        },
+        "workflow_node": {
+          "type": "string"
+        },
+        "part": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 3
+        },
+        "question_id": {
+          "type": ["string", "null"]
+        },
+        "agent_name": {
+          "type": ["string", "null"]
+        },
+        "prompt_version": {
+          "type": ["string", "null"]
+        },
+        "model_name": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["running", "completed", "failed"]
+        },
+        "input_summary": {
+          "type": ["string", "null"]
+        },
+        "output_summary": {
+          "type": ["string", "null"]
+        },
+        "input_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "estimated_cost_usd": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "retrieved_chunks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "default": []
+        },
+        "structured_output_validity": {
+          "type": ["boolean", "null"]
+        },
+        "scoring_result": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "latency_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "error_code": {
+          "type": ["string", "null"]
+        },
+        "error_type": {
+          "type": ["string", "null"]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolCall"
+          },
+          "default": []
+        }
+      }
+    },
+    "ToolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_name", "status", "latency_ms"],
+      "properties": {
+        "tool_name": {
+          "type": "string"
+        },
+        "scope": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "failed"]
+        },
+        "latency_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error_code": {
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}

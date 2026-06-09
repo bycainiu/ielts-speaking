@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ielts-speaking.local/schemas/session-event.schema.json",
+  "title": "SessionEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "session_id", "run_id", "payload", "created_at"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "session.started",
+        "part.started",
+        "examiner.thinking",
+        "examiner.message",
+        "examiner.audio_ready",
+        "timer.started",
+        "timer.tick",
+        "timer.warning",
+        "user.recording_started",
+        "user.silence_detected",
+        "user.answer_committed",
+        "asr.processing",
+        "asr.final",
+        "agent.followup_planned",
+        "part.completed",
+        "scoring.started",
+        "scoring.dimension_completed",
+        "scoring.review_completed",
+        "report.ready",
+        "session.completed",
+        "error.recoverable",
+        "error.fatal"
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
+

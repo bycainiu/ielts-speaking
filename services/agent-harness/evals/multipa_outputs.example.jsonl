@@ -1,0 +1,3 @@
+{"sample_id":"contract_p1_b4_east_poor","provider":"multipa_adapter","predicted_pronunciation_band":4.0,"latency_ms":1280,"estimated_cost_usd":0.012,"deployment_notes":["synthetic contract adapter output for regression only"]}
+{"sample_id":"contract_p2_b6_latin_good","provider":"multipa_adapter","predicted_pronunciation_band":6.0,"latency_ms":1280,"estimated_cost_usd":0.012,"deployment_notes":["synthetic contract adapter output for regression only"]}
+{"sample_id":"contract_p3_b8_euro_good","provider":"multipa_adapter","predicted_pronunciation_band":7.5,"latency_ms":1540,"estimated_cost_usd":0.012,"deployment_notes":["synthetic contract adapter output for regression only"]}

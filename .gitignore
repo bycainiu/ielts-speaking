@@ -1,0 +1,43 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Environment
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Node
+node_modules/
+.next/
+**/.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Go
+bin/
+*.test
+*.out
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Docker / local data
+.docker/
+tmp/
+artifacts/
+img/
+data/
+*.log
+*.tmp

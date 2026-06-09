@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IELTS Speaking Frontend Preview</title>
+    <style>
+      :root {
+        --bg: #07101f;
+        --panel: rgba(15, 27, 46, 0.84);
+        --panel-strong: rgba(19, 35, 58, 0.94);
+        --line: rgba(214, 226, 244, 0.12);
+        --line-strong: rgba(214, 226, 244, 0.22);
+        --text: #edf5ff;
+        --muted: #8da2bc;
+        --soft: #c2d2e3;
+        --gold: #d8b95a;
+        --teal: #43d3c6;
+        --coral: #ff7a6e;
+        --blue: #7aa7ff;
+        --green: #77d68d;
+        --shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 1600px;
+        height: 900px;
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        letter-spacing: 0;
+      }
+
+      body {
+        background:
+          linear-gradient(135deg, rgba(10, 23, 42, 0.98), rgba(7, 16, 31, 0.96) 48%, rgba(13, 31, 43, 0.98)),
+          repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 80px),
+          repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 80px);
+      }
+
+      .canvas {
+        width: 1600px;
+        height: 900px;
+        padding: 34px;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 270px 1fr 390px;
+        gap: 18px;
+        width: 100%;
+        height: 100%;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+      }
+
+      .sidebar {
+        padding: 22px;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding-bottom: 24px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand-mark {
+        width: 42px;
+        height: 42px;
+        border: 1px solid rgba(216, 185, 90, 0.5);
+        border-radius: 8px;
+        background: linear-gradient(145deg, rgba(216, 185, 90, 0.24), rgba(67, 211, 198, 0.12));
+        display: grid;
+        place-items: center;
+        color: var(--gold);
+        font-family: Georgia, serif;
+        font-weight: 700;
+        font-size: 20px;
+      }
+
+      .brand-title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 21px;
+        line-height: 1.08;
+      }
+
+      .brand-subtitle,
+      .eyebrow,
+      .small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .nav {
+        display: grid;
+        gap: 8px;
+        margin-top: 24px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 44px;
+        padding: 0 12px;
+        border-radius: 8px;
+        color: var(--soft);
+        border: 1px solid transparent;
+      }
+
+      .nav-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .icon {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+      }
+
+      .nav-item.active {
+        color: #fff;
+        border-color: rgba(216, 185, 90, 0.36);
+        background: rgba(216, 185, 90, 0.12);
+      }
+
+      .nav-pill {
+        font-size: 10px;
+        color: var(--gold);
+        border: 1px solid rgba(216, 185, 90, 0.34);
+        padding: 2px 7px;
+        border-radius: 999px;
+      }
+
+      .progress-card {
+        margin-top: auto;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(5, 12, 24, 0.4);
+      }
+
+      .progress-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 10px 0 8px;
+        font-size: 13px;
+        color: var(--soft);
+      }
+
+      .bar {
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+
+      .bar span {
+        display: block;
+        height: 100%;
+        width: 68%;
+        background: linear-gradient(90deg, var(--gold), var(--teal));
+      }
+
+      .main {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 18px;
+        min-width: 0;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 22px;
+      }
+
+      .title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 34px;
+        line-height: 1.04;
+        margin: 2px 0 0;
+      }
+
+      .status-strip {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--soft);
+        font-size: 13px;
+      }
+
+      .live-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 16px rgba(119, 214, 141, 0.8);
+      }
+
+      .stage {
+        display: grid;
+        grid-template-columns: 1fr 310px;
+        gap: 18px;
+        min-height: 0;
+      }
+
+      .conversation {
+        padding: 22px;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 18px;
+        min-width: 0;
+      }
+
+      .phase-row {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+
+      .phase {
+        min-height: 68px;
+        padding: 11px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .phase.active {
+        border-color: rgba(67, 211, 198, 0.45);
+        background: rgba(67, 211, 198, 0.09);
+      }
+
+      .phase.done {
+        border-color: rgba(216, 185, 90, 0.32);
+      }
+
+      .phase-label {
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .phase-detail {
+        margin-top: 5px;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .exam-card {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 22px;
+        align-items: center;
+        padding: 28px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02)),
+          rgba(7, 14, 26, 0.34);
+        min-height: 310px;
+      }
+
+      .avatar-wrap {
+        display: grid;
+        justify-items: center;
+        gap: 15px;
+      }
+
+      .avatar {
+        width: 168px;
+        height: 168px;
+        border-radius: 50%;
+        position: relative;
+        border: 1px solid rgba(216, 185, 90, 0.45);
+        background:
+          linear-gradient(160deg, rgba(216, 185, 90, 0.26), rgba(67, 211, 198, 0.12)),
+          #0a1527;
+        display: grid;
+        place-items: center;
+      }
+
+      .avatar::before {
+        content: "";
+        position: absolute;
+        inset: 12px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      .avatar::after {
+        content: "";
+        position: absolute;
+        inset: -8px;
+        border-radius: 50%;
+        border: 2px solid rgba(67, 211, 198, 0.28);
+      }
+
+      .avatar svg {
+        width: 76px;
+        height: 76px;
+        color: var(--gold);
+      }
+
+      .listening {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        padding: 0 11px;
+        border-radius: 999px;
+        color: var(--teal);
+        background: rgba(67, 211, 198, 0.1);
+        border: 1px solid rgba(67, 211, 198, 0.23);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .question {
+        min-width: 0;
+      }
+
+      .question h2 {
+        margin: 10px 0 14px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 31px;
+        line-height: 1.2;
+        font-weight: 500;
+      }
+
+      .cue {
+        border-left: 3px solid var(--gold);
+        padding-left: 16px;
+        display: grid;
+        gap: 9px;
+        color: var(--soft);
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 20px;
+      }
+
+      .chip {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 7px 10px;
+        color: var(--soft);
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .control {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 18px;
+        align-items: center;
+        padding: 18px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(0, 0, 0, 0.18);
+      }
+
+      .wave {
+        display: flex;
+        align-items: end;
+        gap: 5px;
+        height: 62px;
+      }
+
+      .wave i {
+        display: block;
+        width: 6px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, var(--coral), var(--gold));
+      }
+
+      .action-area {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .timer {
+        width: 78px;
+        height: 78px;
+        border-radius: 50%;
+        border: 7px solid rgba(67, 211, 198, 0.18);
+        border-top-color: var(--teal);
+        display: grid;
+        place-items: center;
+        color: #fff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .record {
+        width: 68px;
+        height: 68px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--coral);
+        color: #fff;
+        display: grid;
+        place-items: center;
+        box-shadow: 0 12px 30px rgba(255, 122, 110, 0.32);
+      }
+
+      .record svg {
+        width: 28px;
+        height: 28px;
+      }
+
+      .cue-panel {
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .cue-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .timebox {
+        border-radius: 8px;
+        border: 1px solid rgba(216, 185, 90, 0.28);
+        background: rgba(216, 185, 90, 0.09);
+        padding: 13px;
+      }
+
+      .timebox strong {
+        display: block;
+        font-size: 26px;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--gold);
+        margin-bottom: 2px;
+      }
+
+      .notes {
+        display: grid;
+        gap: 10px;
+      }
+
+      .note {
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 12px;
+        color: var(--soft);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+
+      .coach {
+        padding: 18px 20px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+      }
+
+      .coach-item {
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.035);
+        padding: 13px;
+        min-height: 94px;
+      }
+
+      .coach-item h3 {
+        margin: 0 0 7px;
+        font-size: 13px;
+        color: #fff;
+      }
+
+      .coach-item p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.42;
+        font-size: 12px;
+      }
+
+      .right {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 18px;
+        min-width: 0;
+      }
+
+      .score-card {
+        padding: 22px;
+      }
+
+      .score-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        gap: 14px;
+      }
+
+      .band {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 58px;
+        color: var(--gold);
+        line-height: 0.92;
+      }
+
+      .confidence {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .radar-wrap {
+        display: grid;
+        place-items: center;
+        margin: 18px 0 14px;
+      }
+
+      .radar {
+        width: 270px;
+        height: 220px;
+      }
+
+      .metrics {
+        display: grid;
+        gap: 9px;
+      }
+
+      .metric {
+        display: grid;
+        grid-template-columns: 112px 1fr 36px;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--soft);
+      }
+
+      .meter {
+        height: 7px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .meter span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--teal), var(--blue));
+      }
+
+      .review {
+        padding: 20px;
+        min-height: 0;
+      }
+
+      .review-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .review-item {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 11px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.035);
+        border-radius: 8px;
+        padding: 12px;
+      }
+
+      .review-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: rgba(67, 211, 198, 0.1);
+        color: var(--teal);
+      }
+
+      .review-item h3 {
+        margin: 0 0 4px;
+        font-size: 13px;
+      }
+
+      .review-item p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.36;
+        font-size: 12px;
+      }
+
+      .privacy {
+        padding: 16px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+      }
+
+      .privacy-left {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 0;
+      }
+
+      .shield {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        background: rgba(119, 214, 141, 0.1);
+        color: var(--green);
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+      }
+
+      .tag {
+        flex: 0 0 auto;
+        color: var(--green);
+        border: 1px solid rgba(119, 214, 141, 0.28);
+        background: rgba(119, 214, 141, 0.08);
+        border-radius: 999px;
+        padding: 6px 9px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .serif {
+        font-family: Georgia, "Times New Roman", serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="canvas">
+      <div class="shell">
+        <aside class="panel sidebar">
+          <div class="brand">
+            <div class="brand-mark">S</div>
+            <div>
+              <div class="brand-title">Speaking Studio</div>
+              <div class="brand-subtitle">IELTS live practice</div>
+            </div>
+          </div>
+
+          <nav class="nav" aria-label="Primary">
+            <div class="nav-item active">
+              <div class="nav-label">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 18.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13Z"/><path d="m16.6 16.6 3.4 3.4"/><path d="M12 8v4l2.5 2"/></svg>
+                Live Exam
+              </div>
+              <span class="nav-pill">Now</span>
+            </div>
+            <div class="nav-item">
+              <div class="nav-label">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V5.8A2.8 2.8 0 0 1 6.8 3H20v15H6.8A2.8 2.8 0 0 0 4 20.8"/><path d="M8 7h8"/><path d="M8 11h7"/></svg>
+                Topic Bank
+              </div>
+            </div>
+            <div class="nav-item">
+              <div class="nav-label">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></svg>
+                Reports
+              </div>
+            </div>
+            <div class="nav-item">
+              <div class="nav-label">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+                Calibration
+              </div>
+            </div>
+            <div class="nav-item">
+              <div class="nav-label">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
+                Privacy
+              </div>
+            </div>
+          </nav>
+
+          <div class="progress-card">
+            <div class="eyebrow">WEEKLY TARGET</div>
+            <div class="progress-row">
+              <span>4 of 6 sessions</span>
+              <strong>68%</strong>
+            </div>
+            <div class="bar"><span></span></div>
+            <p class="small" style="line-height: 1.45; margin: 14px 0 0">
+              Next focus: richer examples in Part 3 and cleaner linking phrases.
+            </p>
+          </div>
+        </aside>
+
+        <main class="main">
+          <header class="panel topbar">
+            <div>
+              <div class="eyebrow" style="color: var(--gold); font-weight: 800; text-transform: uppercase">IELTS Speaking</div>
+              <h1 class="title">Live Practice Console</h1>
+            </div>
+            <div class="status-strip">
+              <span class="live-dot"></span>
+              WebSocket connected
+              <span style="color: var(--line-strong)">|</span>
+              Agent run #A29F
+            </div>
+          </header>
+
+          <section class="stage">
+            <div class="panel conversation">
+              <div class="phase-row">
+                <div class="phase done">
+                  <div class="phase-label">Part 1</div>
+                  <div class="phase-detail">Warm-up complete</div>
+                </div>
+                <div class="phase active">
+                  <div class="phase-label">Part 2</div>
+                  <div class="phase-detail">Cue card speaking</div>
+                </div>
+                <div class="phase">
+                  <div class="phase-label">Part 3</div>
+                  <div class="phase-detail">Discussion pending</div>
+                </div>
+                <div class="phase">
+                  <div class="phase-label">Report</div>
+                  <div class="phase-detail">Scoring queued</div>
+                </div>
+              </div>
+
+              <div class="exam-card">
+                <div class="avatar-wrap">
+                  <div class="avatar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                      <path d="M12 18.5a6.5 6.5 0 0 0 6.5-6.5v-1.5a6.5 6.5 0 0 0-13 0V12a6.5 6.5 0 0 0 6.5 6.5Z"/>
+                      <path d="M8.5 10.3v1.8"/>
+                      <path d="M15.5 10.3v1.8"/>
+                      <path d="M9.3 15c1.8 1 3.6 1 5.4 0"/>
+                      <path d="M4 13.2H2.8a1.8 1.8 0 0 1 0-3.6H4"/>
+                      <path d="M20 13.2h1.2a1.8 1.8 0 0 0 0-3.6H20"/>
+                    </svg>
+                  </div>
+                  <div class="listening">
+                    <span class="live-dot" style="width: 7px; height: 7px"></span>
+                    Examiner listening
+                  </div>
+                </div>
+
+                <div class="question">
+                  <div class="eyebrow" style="color: var(--teal); font-weight: 800; text-transform: uppercase">Current question</div>
+                  <h2>Describe a skill you learned that changed the way you study or work.</h2>
+                  <div class="cue">
+                    <span>You should say what the skill is and how you learned it.</span>
+                    <span>Explain why it was difficult at first.</span>
+                    <span>Describe how it has affected your daily routine.</span>
+                  </div>
+                  <div class="chips">
+                    <span class="chip">fluency monitor</span>
+                    <span class="chip">topic relevance</span>
+                    <span class="chip">pronunciation evidence</span>
+                    <span class="chip">ASR transcript live</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="control">
+                <div>
+                  <div class="small" style="margin-bottom: 8px; color: var(--teal); font-weight: 800; text-transform: uppercase">Your answer waveform</div>
+                  <div class="wave" aria-hidden="true">
+                    <i style="height: 20px"></i><i style="height: 34px"></i><i style="height: 48px"></i><i style="height: 28px"></i>
+                    <i style="height: 54px"></i><i style="height: 37px"></i><i style="height: 61px"></i><i style="height: 42px"></i>
+                    <i style="height: 26px"></i><i style="height: 58px"></i><i style="height: 47px"></i><i style="height: 32px"></i>
+                    <i style="height: 63px"></i><i style="height: 41px"></i><i style="height: 24px"></i><i style="height: 51px"></i>
+                    <i style="height: 36px"></i><i style="height: 58px"></i><i style="height: 44px"></i><i style="height: 29px"></i>
+                    <i style="height: 55px"></i><i style="height: 39px"></i><i style="height: 22px"></i><i style="height: 45px"></i>
+                    <i style="height: 31px"></i><i style="height: 52px"></i><i style="height: 60px"></i><i style="height: 35px"></i>
+                    <i style="height: 49px"></i><i style="height: 27px"></i><i style="height: 43px"></i><i style="height: 57px"></i>
+                  </div>
+                </div>
+                <div class="action-area">
+                  <div class="timer">01:12</div>
+                  <button class="record" aria-label="Stop recording">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <aside class="panel cue-panel">
+              <div class="cue-title">
+                <div>
+                  <div class="eyebrow" style="color: var(--gold); font-weight: 800">CUE CARD</div>
+                  <div class="serif" style="font-size: 24px; margin-top: 3px">Preparation notes</div>
+                </div>
+                <svg class="icon" style="color: var(--gold)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V5.8A2.8 2.8 0 0 1 6.8 3H20v15H6.8A2.8 2.8 0 0 0 4 20.8"/><path d="M8 7h8"/><path d="M8 11h7"/></svg>
+              </div>
+              <div class="timebox">
+                <strong>60s</strong>
+                <span class="small">Preparation window</span>
+              </div>
+              <div class="notes">
+                <div class="note"><strong style="color: #fff">Opening:</strong> I would like to talk about active recall, a learning method I started using last year.</div>
+                <div class="note"><strong style="color: #fff">Example:</strong> It helped me prepare presentations without memorizing every sentence.</div>
+                <div class="note"><strong style="color: #fff">Ending:</strong> It made my study routine more deliberate and measurable.</div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="panel coach">
+            <article class="coach-item">
+              <h3>Live transcript</h3>
+              <p>"At first it was frustrating because I could remember ideas, but not express them naturally..."</p>
+            </article>
+            <article class="coach-item">
+              <h3>Recovery prompt</h3>
+              <p>Use one concrete moment, then connect it to the habit you changed.</p>
+            </article>
+            <article class="coach-item">
+              <h3>Speech signal</h3>
+              <p>Silence detector stable. Pace slightly fast at 168 words per minute.</p>
+            </article>
+          </section>
+        </main>
+
+        <aside class="right">
+          <section class="panel score-card">
+            <div class="score-head">
+              <div>
+                <div class="eyebrow" style="color: var(--teal); font-weight: 800; text-transform: uppercase">Score preview</div>
+                <div class="band">7.0</div>
+                <div class="confidence">Confidence 82% · Practice reference only</div>
+              </div>
+              <svg class="icon" style="width: 32px; height: 32px; color: var(--teal)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/></svg>
+            </div>
+
+            <div class="radar-wrap">
+              <svg class="radar" viewBox="0 0 280 230" role="img" aria-label="IELTS criteria radar chart">
+                <g transform="translate(140 112)">
+                  <polygon points="0,-92 79.7,-46 79.7,46 0,92 -79.7,46 -79.7,-46" fill="none" stroke="rgba(255,255,255,.11)" />
+                  <polygon points="0,-66 57,-33 57,33 0,66 -57,33 -57,-33" fill="none" stroke="rgba(255,255,255,.11)" />
+                  <polygon points="0,-38 32.9,-19 32.9,19 0,38 -32.9,19 -32.9,-19" fill="none" stroke="rgba(255,255,255,.11)" />
+                  <line x1="0" y1="0" x2="0" y2="-92" stroke="rgba(255,255,255,.1)" />
+                  <line x1="0" y1="0" x2="79.7" y2="-46" stroke="rgba(255,255,255,.1)" />
+                  <line x1="0" y1="0" x2="79.7" y2="46" stroke="rgba(255,255,255,.1)" />
+                  <line x1="0" y1="0" x2="0" y2="92" stroke="rgba(255,255,255,.1)" />
+                  <line x1="0" y1="0" x2="-79.7" y2="46" stroke="rgba(255,255,255,.1)" />
+                  <line x1="0" y1="0" x2="-79.7" y2="-46" stroke="rgba(255,255,255,.1)" />
+                  <polygon points="0,-74 61,-35 67,39 0,65 -57,33 -55,-32" fill="rgba(67,211,198,.22)" stroke="#43d3c6" stroke-width="2" />
+                  <circle cx="0" cy="-74" r="4" fill="#d8b95a" />
+                  <circle cx="61" cy="-35" r="4" fill="#d8b95a" />
+                  <circle cx="67" cy="39" r="4" fill="#d8b95a" />
+                  <circle cx="0" cy="65" r="4" fill="#d8b95a" />
+                  <circle cx="-57" cy="33" r="4" fill="#d8b95a" />
+                  <circle cx="-55" cy="-32" r="4" fill="#d8b95a" />
+                  <text x="0" y="-104" text-anchor="middle" fill="#8da2bc" font-size="11">Fluency</text>
+                  <text x="93" y="-50" fill="#8da2bc" font-size="11">Lexical</text>
+                  <text x="92" y="54" fill="#8da2bc" font-size="11">Grammar</text>
+                  <text x="0" y="109" text-anchor="middle" fill="#8da2bc" font-size="11">Pronunciation</text>
+                  <text x="-102" y="55" text-anchor="end" fill="#8da2bc" font-size="11">Coherence</text>
+                  <text x="-101" y="-48" text-anchor="end" fill="#8da2bc" font-size="11">Task fit</text>
+                </g>
+              </svg>
+            </div>
+
+            <div class="metrics">
+              <div class="metric"><span>Fluency</span><div class="meter"><span style="width: 78%"></span></div><strong>7.0</strong></div>
+              <div class="metric"><span>Lexical</span><div class="meter"><span style="width: 74%"></span></div><strong>7.0</strong></div>
+              <div class="metric"><span>Grammar</span><div class="meter"><span style="width: 68%"></span></div><strong>6.5</strong></div>
+              <div class="metric"><span>Pronunciation</span><div class="meter"><span style="width: 72%"></span></div><strong>7.0</strong></div>
+            </div>
+          </section>
+
+          <section class="panel review">
+            <div class="eyebrow" style="color: var(--gold); font-weight: 800; text-transform: uppercase">Coach feedback</div>
+            <div class="serif" style="font-size: 25px; margin-top: 4px">Next best actions</div>
+            <div class="review-list">
+              <article class="review-item">
+                <div class="review-icon">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 1.9 5.8H20l-5 3.7 1.9 5.8-5-3.6-5 3.6L8.8 12.5l-5-3.7h6.2L12 3Z"/></svg>
+                </div>
+                <div>
+                  <h3>Upgrade examples</h3>
+                  <p>Add one vivid situation before explaining the result, especially in Part 2.</p>
+                </div>
+              </article>
+              <article class="review-item">
+                <div class="review-icon" style="background: rgba(216,185,90,.1); color: var(--gold)">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V5.8A2.8 2.8 0 0 1 6.8 3H20v15H6.8A2.8 2.8 0 0 0 4 20.8"/><path d="M8 7h8"/><path d="M8 11h7"/></svg>
+                </div>
+                <div>
+                  <h3>Lexical precision</h3>
+                  <p>Replace broad words like "good" with measurable study outcomes.</p>
+                </div>
+              </article>
+              <article class="review-item">
+                <div class="review-icon" style="background: rgba(255,122,110,.1); color: var(--coral)">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+                </div>
+                <div>
+                  <h3>Pacing control</h3>
+                  <p>Insert a half-second pause after transitions to improve clarity.</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel privacy">
+            <div class="privacy-left">
+              <div class="shield">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>
+              </div>
+              <div>
+                <div style="font-size: 13px; font-weight: 800">Recording consent active</div>
+                <div class="small">Audio replay and report review enabled</div>
+              </div>
+            </div>
+            <span class="tag">Compliant</span>
+          </section>
+        </aside>
+      </div>
+    </div>
+  </body>
+</html>
