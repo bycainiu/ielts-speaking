@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -12,10 +12,12 @@ import {
   Clock3,
   Database,
   FileText,
+  FileUp,
   Layers3,
   Loader2,
   MessageSquareText,
   RefreshCcw,
+  ScrollText,
   ShieldCheck,
   Sparkles,
   ThumbsDown,
@@ -413,6 +415,17 @@ export default function AdminConsolePage() {
         metricValue: String(observability?.run_count ?? 0),
       },
       {
+        title: "Audit Console",
+        titleZh: "日志审计",
+        description: "Inspect complete session event flow, trace hierarchy and admin operation logs.",
+        href: "/admin/audit",
+        icon: ScrollText,
+        status: observability ? "healthy" : "unknown",
+        statusLabel: observability ? "Healthy" : "Pending",
+        metricLabel: "Coverage",
+        metricValue: "Session + Ops",
+      },
+      {
         title: "Scoring Calibration",
         titleZh: "评分校准",
         description: "Audit anchor samples and run speech quality gates.",
@@ -453,6 +466,10 @@ export default function AdminConsolePage() {
         description="Content, AI operations, compliance and quality gates for IELTS Speaking Agent Studio."
         actions={
           <>
+            <Button type="button" variant="teal" onClick={() => router.push("/admin/knowledge/imports")}>
+              <FileUp className="mr-2 h-4 w-4" />
+              导入队列
+            </Button>
             <Button type="button" variant="soft" onClick={() => router.push("/practice")}>
               <ArrowLeft className="mr-2 h-4 w-4" />
               Practice / 练习

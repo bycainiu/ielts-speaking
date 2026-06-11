@@ -13,9 +13,9 @@ const config = {
   theme: {
     container: {
       center: true,
-      padding: "2rem",
+      padding: "1.5rem",
       screens: {
-        "2xl": "1400px",
+        "2xl": "1600px",
       },
     },
     extend: {
@@ -30,10 +30,21 @@ const config = {
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
         academic: {
-          gold: "#D4AF37",
-          navy: "#0B132B",
-          slate: "#1C2541",
-          teal: "#3A7CA5",
+          navy: "hsl(var(--academic-navy))",
+          slate: "hsl(var(--academic-slate))",
+          accent: "hsl(var(--academic-accent))",
+          "accent-soft": "hsl(var(--academic-accent-soft))",
+          paper: "hsl(var(--academic-paper))",
+          "paper-border": "hsl(var(--academic-paper-border))",
+          score: "hsl(var(--academic-score))",
+          "score-soft": "hsl(var(--academic-score-soft))",
+          success: "hsl(var(--academic-success))",
+          "success-soft": "hsl(var(--academic-success-soft))",
+          warn: "hsl(var(--academic-warn))",
+          "warn-soft": "hsl(var(--academic-warn-soft))",
+          /* legacy aliases — map old names to new palette */
+          gold: "hsl(var(--academic-score))",
+          teal: "hsl(var(--academic-accent))",
         },
         primary: {
           DEFAULT: "hsl(var(--primary))",

@@ -4,36 +4,50 @@
 
 @layer base {
   :root {
-    --background: 224 71% 4%;
-    --foreground: 213 31% 91%;
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
 
-    --muted: 223 47% 11%;
-    --muted-foreground: 215.4 16.3% 56.9%;
+    --muted: 214 32% 95%;
+    --muted-foreground: 215 16% 47%;
 
-    --popover: 224 71% 4%;
-    --popover-foreground: 215 20.2% 65.1%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
 
-    --card: 224 71% 4%;
-    --card-foreground: 213 31% 91%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
 
-    --border: 216 34% 17%;
-    --input: 216 34% 17%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 1.2%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 210 40% 98%;
 
-    --secondary: 222.2 47.4% 11.2%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 214 32% 95%;
+    --secondary-foreground: 222 47% 11%;
 
-    --accent: 216 34% 17%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 217 91% 60%;
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 63% 31%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 210 40% 98%;
 
-    --ring: 216 34% 17%;
+    --ring: 217 91% 60%;
 
     --radius: 0.75rem;
+
+    /* Academic brand tokens — single cohesive palette */
+    --academic-navy: 222 47% 11%;
+    --academic-slate: 215 28% 17%;
+    --academic-accent: 217 91% 53%;
+    --academic-accent-soft: 214 95% 93%;
+    --academic-paper: 214 32% 96%;
+    --academic-paper-border: 214 32% 88%;
+    --academic-score: 32 95% 44%;
+    --academic-score-soft: 48 96% 89%;
+    --academic-success: 160 84% 39%;
+    --academic-success-soft: 152 76% 92%;
+    --academic-warn: 25 95% 53%;
+    --academic-warn-soft: 33 100% 94%;
   }
 }
 
@@ -47,11 +61,10 @@
   }
 }
 
-/* Premium glassmorphism utility classes */
 .glass {
   @apply bg-background/60 backdrop-blur-xl border border-border/50 shadow-xl;
 }
 
 .glass-panel {
-  @apply bg-card/40 backdrop-blur-md border border-white/10 rounded-2xl shadow-2xl;
+  @apply bg-card/80 backdrop-blur-md border border-border rounded-2xl shadow-lg;
 }

@@ -1,5 +1,4 @@
 const apiBaseUrl = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:18080';
-const agentHarnessUrl = process.env.AGENT_HARNESS_URL || 'http://localhost:8000';
 const speechAssessmentUrl = process.env.SPEECH_ASSESSMENT_URL || 'http://localhost:8010';
 
 /** @type {import('next').NextConfig} */
@@ -11,10 +10,6 @@ const nextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
-        {
-          source: '/api/agent-harness/:path*',
-          destination: `${agentHarnessUrl}/:path*`,
-        },
         {
           source: '/speech-assessment/:path*',
           destination: `${speechAssessmentUrl}/:path*`,

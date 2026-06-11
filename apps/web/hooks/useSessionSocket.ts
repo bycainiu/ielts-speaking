@@ -14,15 +14,16 @@ type SocketStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 500;
 
-export function useSessionSocket(sessionId: string) {
-  const [status, setStatus] = useState<SocketStatus>('connecting');
+export function useSessionSocket(sessionId: string, options?: { enabled?: boolean }) {
+  const [status, setStatus] = useState<SocketStatus>('disconnected');
   const [lastEvent, setLastEvent] = useState<SessionEvent | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const shouldReconnectRef = useRef(true);
   const { accessToken, hasHydrated, isAuthenticated } = useAuthStore();
-  const canConnect = hasHydrated && isAuthenticated && Boolean(accessToken && sessionId);
+  const enabled = options?.enabled ?? true;
+  const canConnect = enabled && hasHydrated && isAuthenticated && Boolean(accessToken && sessionId);
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -39,9 +40,14 @@ export function useSessionSocket(sessionId: string) {
     }
   }, []);
 
+  useEffect(() => {
+    setLastEvent(null);
+  }, [sessionId]);
+
   const connect = useCallback(() => {
     if (!canConnect || !accessToken) {
       closeSocket();
+      setLastEvent(null);
       setStatus('disconnected');
       return;
     }
@@ -100,6 +106,7 @@ export function useSessionSocket(sessionId: string) {
       shouldReconnectRef.current = false;
       clearReconnectTimer();
       closeSocket();
+      setLastEvent(null);
       setStatus('disconnected');
       return;
     }
@@ -140,15 +147,15 @@ export function useSessionSocket(sessionId: string) {
 }
 
 function buildSessionWebSocketUrl(sessionId: string, accessToken: string) {
-  const configuredBase = process.env.NEXT_PUBLIC_WS_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL;
+  const configuredBase = process.env.NEXT_PUBLIC_WS_BASE_URL;
   let base: string;
 
   if (configuredBase) {
     base = normalizeBrowserWebSocketBase(configuredBase);
-  } else if (typeof window !== "undefined" && !["localhost", "127.0.0.1"].includes(window.location.hostname)) {
-    base = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:18080`;
+  } else if (typeof window !== "undefined") {
+    base = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
   } else {
-    base = "ws://localhost:18080";
+    base = "ws://localhost:3000";
   }
 
   const url = new URL(`/api/ws/sessions/${sessionId}`, base);

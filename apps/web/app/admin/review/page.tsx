@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -261,7 +261,7 @@ export default function ReviewBoardPage() {
             Loading user feedback...
           </div>
         ) : feedback.length === 0 ? (
-          <EmptyState icon={MessageSquareText} title="No user feedback" body="No user feedback has been submitted yet. 暂无用户反馈。" />
+          <EmptyState icon={MessageSquareText} title="No user feedback" body="暂无用户反馈。" />
         ) : (
           <div className="grid gap-3">
             {feedback.map((item) => (
@@ -278,7 +278,7 @@ export default function ReviewBoardPage() {
                     </div>
                     {item.comment && <p className="mt-3 text-sm leading-relaxed text-slate-700">{item.comment}</p>}
                     <p className="mt-2 break-all text-xs text-slate-500">
-                      report {item.report_id} · session {item.session_id}
+                      report {item.report_id} 路 session {item.session_id}
                     </p>
                   </div>
                   {item.target_id && <span className="break-all text-xs text-slate-500 md:max-w-64">target {item.target_id}</span>}
@@ -319,7 +319,7 @@ export default function ReviewBoardPage() {
         </div>
         {voicePolicy && (
           <p className="mt-3 text-xs text-slate-500">
-            {voicePolicy.version} · explicit consent {voicePolicy.requires_explicit_consent ? "required" : "not required"}
+            {voicePolicy.version} 路 explicit consent {voicePolicy.requires_explicit_consent ? "required" : "not required"}
           </p>
         )}
       </Panel>
@@ -349,7 +349,7 @@ export default function ReviewBoardPage() {
             Loading review items...
           </div>
         ) : references.length === 0 ? (
-          <EmptyState icon={MessageSquareText} title="No reference answers" body="No reference answers match the current filter. 当前筛选条件下暂无参考答案。" />
+          <EmptyState icon={MessageSquareText} title="No reference answers" body="暂无参考答案。" />
         ) : (
           <div className="grid gap-4">
             {references.map((item) => (

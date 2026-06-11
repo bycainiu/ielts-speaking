@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -368,7 +368,7 @@ export default function ObservabilityAdminPage() {
           <SectionHeading
             icon={Waypoints}
             label="Trace Timeline"
-            labelZh="调用链"
+            labelZh="Trace 时间线"
             action={
               <Button type="button" variant="soft" size="sm" onClick={cancelRun} disabled={actionLoading || !trace}>
                 {actionLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Ban className="mr-2 h-4 w-4" />}
@@ -419,7 +419,7 @@ export default function ObservabilityAdminPage() {
 
         <div className="grid gap-5">
           <Panel>
-            <SectionHeading icon={AlertTriangle} label="Alerts" labelZh="告警" />
+            <SectionHeading icon={AlertTriangle} label="Alerts" labelZh="鍛婅" />
             {alerts.length ? (
               <div className="grid gap-2">
                 {alerts.map((item) => (
@@ -429,7 +429,7 @@ export default function ObservabilityAdminPage() {
                       <span className="text-xs text-slate-500">{item.metric}</span>
                     </div>
                     <p className="mt-2 text-sm leading-6 text-slate-700">{item.message}</p>
-                    <p className="mt-2 text-xs text-slate-500">actual {item.actual} · threshold {item.threshold}</p>
+                    <p className="mt-2 text-xs text-slate-500">actual {item.actual} 路 threshold {item.threshold}</p>
                   </article>
                 ))}
               </div>

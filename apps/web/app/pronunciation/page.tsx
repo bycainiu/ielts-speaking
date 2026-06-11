@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -289,7 +289,7 @@ export default function PronunciationPage() {
             <div className="flex gap-3">
               <ShieldCheck className="mt-1 h-5 w-5 text-[#8A6F1D]" />
               <div>
-                <h2 className="text-sm font-semibold text-slate-950">Recording Consent 录音授权</h2>
+                <h2 className="text-sm font-semibold text-slate-950">Recording Consent 褰曢煶鎺堟潈</h2>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
                   Drill audio is uploaded for pronunciation evidence and replay-related processing. You can delete recordings from History.
                 </p>

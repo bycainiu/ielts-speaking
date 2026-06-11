@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Playfair_Display } from "next/font/google";
+
+import { AuthSessionGuard } from "@/components/auth/AuthSessionGuard";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -16,12 +18,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en">
       <body
         suppressHydrationWarning
-        className={`${inter.variable} ${playfair.variable} font-sans min-h-screen bg-academic-navy text-slate-200 antialiased selection:bg-academic-teal/30`}
+        className={`${inter.variable} ${playfair.variable} font-sans min-h-screen bg-background text-foreground antialiased selection:bg-academic-accent/20`}
       >
-        <div className="fixed inset-0 z-[-1] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-academic-slate via-academic-navy to-academic-navy"></div>
+        <AuthSessionGuard />
         {children}
       </body>
     </html>

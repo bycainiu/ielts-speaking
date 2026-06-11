@@ -4,12 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   AlertTriangle,
-  ArrowLeft,
   BrainCircuit,
   CheckCircle2,
+  Eye,
+  EyeOff,
   FileText,
   Loader2,
   Mic2,
+  PauseCircle,
   Play,
   Radio,
   RefreshCcw,
@@ -22,15 +24,25 @@ import {
 } from "lucide-react";
 
 import { AcademicShell, InlineKpi, PageHeader, Panel, SectionHeading, StatusBadge, Waveform } from "@/components/academic";
-import { AudioPlayer } from "@/components/AudioPlayer";
+import { AudioPlayer, type AudioPlayerHandle } from "@/components/AudioPlayer";
 import { ExaminerAvatar } from "@/components/ExaminerAvatar";
 import { RadarChart } from "@/components/RadarChart";
 import { Timer } from "@/components/Timer";
 import { Button } from "@/components/ui/button";
-import { audioFileExtension, useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { audioFileExtension, microphoneStartErrorMessage, useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { useBrowserSpeechRecognition } from "@/hooks/useBrowserSpeechRecognition";
 import { type SessionEvent, useSessionSocket } from "@/hooks/useSessionSocket";
 import { useVAD } from "@/hooks/useVAD";
 import { agentApi, api } from "@/lib/api";
+import { hasPersistableScoreReport, buildScoreReportPayload, scoreRetryMessage } from "@/lib/agentResponseUtils";
+import {
+  DEFAULT_EXAM_FLOW_SETTINGS,
+  examinerAudioFinishAction,
+  normalizeExamFlowSettings,
+  resolveTimerPlan,
+  type ExamFlowSettings,
+} from "@/lib/examFlow";
+import { choosePreferredTranscript, normalizeTranscriptText } from "@/lib/transcriptUtils";
 import { useAuthStore } from "@/store/authStore";
 
 type SessionState =
@@ -92,11 +104,19 @@ type SessionDetails = {
   target_part?: number | null;
   topic_id?: string | null;
   state?: Record<string, unknown> | null;
+  parts?: Array<{
+    id: string;
+    part: number;
+    status: string;
+  }>;
   turns?: Array<{
     id: string;
+    part_id?: string | null;
     speaker: string;
+    status?: string;
     question_text?: string | null;
     answer_text?: string | null;
+    metadata?: Record<string, unknown> | null;
   }>;
 };
 
@@ -112,6 +132,7 @@ type ApiError = {
 type PendingAudioUpload = {
   blob: Blob;
   durationMs: number;
+  browserTranscript?: string;
   turnId: string | null;
   createdAt: number;
 };
@@ -130,6 +151,14 @@ type AudioUploadResponse = {
   };
 };
 
+type SynthesizeTTSResponse = {
+  audio_asset: {
+    id: string;
+    mime_type?: string;
+    duration_ms?: number | null;
+  };
+};
+
 type TranscribeAudioResponse = {
   audio_asset_id: string;
   asr_text: string;
@@ -141,21 +170,15 @@ type TranscribeAudioResponse = {
   metadata?: Record<string, unknown>;
 };
 
-type ScoreReportPayload = {
-  report_id?: string | null;
-  version?: number;
-  status: "ready";
-  overall_band: number;
-  confidence: number;
-  disclaimer: string;
-  model_run_id?: string | null;
-  criteria: Record<string, Record<string, unknown>>;
-  reviewer_notes: string[];
-  next_practice_plan: Array<Record<string, unknown>>;
-  feedback_items: Array<Record<string, unknown>>;
-  reference_answers: Array<Record<string, unknown>>;
-  raw_report: Record<string, unknown>;
-};
+type SelectedTranscript =
+  | ReturnType<typeof choosePreferredTranscript>
+  | {
+      transcript: string;
+      source: "none";
+      reason: string | null;
+    };
+
+type ScoreReportPayload = ReturnType<typeof buildScoreReportPayload>;
 
 const timeline = [
   { part: 1, label: "Part 1", labelZh: "日常问答", detail: "Daily topics", duration: "04:30" },
@@ -177,9 +200,25 @@ export default function LiveSessionPage() {
   const params = useParams();
   const router = useRouter();
   const sessionId = params.sessionId as string;
-  const { user, isAuthenticated, hasHydrated, fetchUser } = useAuthStore();
-  const { status: socketStatus, lastEvent, sendMessage, reconnect } = useSessionSocket(sessionId);
-  const { isRecording, stream: recordingStream, startRecording, stopRecording } = useAudioRecorder();
+  const { user, isAuthenticated, hasHydrated, fetchUser, accessToken } = useAuthStore();
+  const {
+    isRecording,
+    isStarting: isRecordingStarting,
+    isStartSlow: isRecordingStartSlow,
+    stream: recordingStream,
+    startRecording,
+    stopRecording,
+    discardRecording,
+    primeMicrophone,
+  } = useAudioRecorder();
+  const {
+    finalTranscript: browserAsrFinalTranscript,
+    interimTranscript: browserAsrInterimTranscript,
+    startRecognition: startBrowserSpeechRecognition,
+    stopRecognition: stopBrowserSpeechRecognition,
+    cancelRecognition: cancelBrowserSpeechRecognition,
+    resetTranscript: resetBrowserSpeechRecognition,
+  } = useBrowserSpeechRecognition("en-US");
 
   const [session, setSession] = useState<SessionDetails | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>("connecting");
@@ -187,7 +226,6 @@ export default function LiveSessionPage() {
   const [completedParts, setCompletedParts] = useState<number[]>([]);
   const [examinerText, setExaminerText] = useState("Connecting to the examiner...");
   const [examinerAudioId, setExaminerAudioId] = useState<string | null>(null);
-  const [audioReplayKey, setAudioReplayKey] = useState(0);
   const [cueCard, setCueCard] = useState<CueCard | null>(null);
   const [practiceHints, setPracticeHints] = useState<string[]>([]);
   const [topicVocabulary, setTopicVocabulary] = useState<string[]>([]);
@@ -202,23 +240,50 @@ export default function LiveSessionPage() {
   const [pendingUpload, setPendingUpload] = useState<PendingAudioUpload | null>(null);
   const [retryingUpload, setRetryingUpload] = useState(false);
   const [manualAnswerText, setManualAnswerText] = useState("");
+  const [showQuestionText, setShowQuestionText] = useState(true);
+  const [isReplaying, setIsReplaying] = useState(false);
+  const audioPlayerRef = useRef<AudioPlayerHandle>(null);
+  const isReplayingRef = useRef(false);
+  const socketEnabled = Boolean(session && !isReviewOnlySessionStatus(session.status));
+  const { status: socketStatus, lastEvent, sendMessage, reconnect } = useSessionSocket(sessionId, { enabled: socketEnabled });
 
   const recordingStartedAtRef = useRef<number | null>(null);
   const recordingStopDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isStoppingRecordingRef = useRef(false);
   const speakingSecondsRef = useRef(0);
   const timerPhaseRef = useRef<"idle" | "preparation" | "speaking">("idle");
+  const examSettingsRef = useRef<ExamFlowSettings>(DEFAULT_EXAM_FLOW_SETTINGS);
+  const questionPlaybackDoneRef = useRef(true);
   const agentPlanStartedRef = useRef(false);
   const scoringInProgressRef = useRef(false);
   const agentStateRef = useRef<Record<string, unknown> | null>(null);
   const currentPartRef = useRef(1);
   const currentTurnIdRef = useRef<string | null>(null);
+  const sessionStatusRef = useRef<string | null>(null);
+  const isRecordingRef = useRef(false);
+  const isRecordingStartingRef = useRef(false);
+  const isExitingSessionRef = useRef(false);
+  const completionRedirectRef = useRef(false);
+  const pauseRequestInFlightRef = useRef(false);
   const startAgentPlanRef = useRef<() => Promise<void>>(async () => undefined);
-  const processUploadedAnswerRef = useRef<(audioId: string, audioBlob: Blob, durationMs: number, turnId: string) => Promise<void>>(async () => undefined);
+  const restoreSessionFromSavedStateRef = useRef<(savedSession: SessionDetails) => Promise<boolean>>(async () => false);
+  const processUploadedAnswerRef = useRef<(audioId: string, audioBlob: Blob, durationMs: number, turnId: string, browserTranscript?: string) => Promise<void>>(async () => undefined);
   const activeStepIndex = Math.max(0, timeline.findIndex((item) => item.part === currentPart));
   const progressPercent = Math.min(100, Math.max(0, ((completedParts.length + (sessionState === "completed" ? 1 : 0)) / 4) * 100));
   const timerIsActive = sessionState === "user_preparing" || sessionState === "user_speaking";
   const vadMinimumBeforeSilenceMs = suggestedSeconds > 0 ? Math.max(MIN_RECORDING_MS, Math.round(suggestedSeconds * 1000 * 0.8)) : 12000;
+  const transcriptPreview = asrText || browserAsrFinalTranscript || browserAsrInterimTranscript;
+
+  const releaseLocalRecordingResources = useCallback(() => {
+    if (recordingStopDelayRef.current) {
+      clearTimeout(recordingStopDelayRef.current);
+      recordingStopDelayRef.current = null;
+    }
+    cancelBrowserSpeechRecognition();
+    discardRecording();
+    recordingStartedAtRef.current = null;
+    isStoppingRecordingRef.current = false;
+  }, [cancelBrowserSpeechRecognition, discardRecording]);
 
   useEffect(() => {
     currentPartRef.current = currentPart;
@@ -229,13 +294,50 @@ export default function LiveSessionPage() {
   }, [currentTurnId]);
 
   useEffect(() => {
-    return () => {
-      if (recordingStopDelayRef.current) {
-        clearTimeout(recordingStopDelayRef.current);
-        recordingStopDelayRef.current = null;
+    sessionStatusRef.current = session?.status ?? null;
+  }, [session?.status]);
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  useEffect(() => {
+    isRecordingStartingRef.current = isRecordingStarting;
+  }, [isRecordingStarting]);
+
+  useEffect(() => {
+    if (!isRecordingStartSlow || isExitingSessionRef.current) return;
+    setError("");
+    setNotice("浏览器仍在等待麦克风授权或音频设备真正就绪。状态切到 Recording 前请先不要开始回答；若不再继续，可点击 Cancel mic。");
+  }, [isRecordingStartSlow]);
+
+  useEffect(() => {
+    if (!recordingConsentAccepted || !currentTurnId) return;
+    let cancelled = false;
+
+    async function warmMicrophoneIfGranted() {
+      const permissionState = await queryMicrophonePermissionState();
+      if (cancelled || permissionState !== "granted") return;
+      try {
+        await primeMicrophone();
+      } catch {
+        // 麦克风预热失败时不打断页面流程，首次点击录音时仍可重新申请。
       }
+    }
+
+    void warmMicrophoneIfGranted();
+    return () => {
+      cancelled = true;
     };
-  }, []);
+  }, [currentTurnId, primeMicrophone, recordingConsentAccepted]);
+
+  useEffect(() => {
+    isExitingSessionRef.current = false;
+    return () => {
+      isExitingSessionRef.current = true;
+      releaseLocalRecordingResources();
+    };
+  }, [releaseLocalRecordingResources]);
 
   useEffect(() => {
     if (hasHydrated && !isAuthenticated) {
@@ -250,6 +352,37 @@ export default function LiveSessionPage() {
   }, [fetchUser, hasHydrated, isAuthenticated, user]);
 
   useEffect(() => {
+    if (!accessToken) return;
+
+    const pauseOnPageHide = () => {
+      isExitingSessionRef.current = true;
+      releaseLocalRecordingResources();
+      if (completionRedirectRef.current || !isPauseableSessionStatus(sessionStatusRef.current)) return;
+      const token = useAuthStore.getState().accessToken;
+      if (!token) return;
+      void fetch(`/api/sessions/${sessionId}/pause`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+    const resetExitStateOnPageShow = () => {
+      if (!completionRedirectRef.current) {
+        isExitingSessionRef.current = false;
+      }
+    };
+
+    window.addEventListener("pagehide", pauseOnPageHide);
+    window.addEventListener("pageshow", resetExitStateOnPageShow);
+    return () => {
+      window.removeEventListener("pagehide", pauseOnPageHide);
+      window.removeEventListener("pageshow", resetExitStateOnPageShow);
+    };
+  }, [accessToken, releaseLocalRecordingResources, sessionId]);
+
+  useEffect(() => {
     if (!hasHydrated || !isAuthenticated) return;
 
     let cancelled = false;
@@ -261,7 +394,40 @@ export default function LiveSessionPage() {
         ]);
         if (cancelled) return;
         if (sessionResponse.status === "fulfilled") {
-          setSession(sessionResponse.value.data.session);
+          let loadedSession = sessionResponse.value.data.session;
+          sessionStatusRef.current = loadedSession.status;
+
+          const flowSettings = normalizeExamFlowSettings(asRecord(loadedSession.state));
+          examSettingsRef.current = flowSettings;
+          setShowQuestionText(flowSettings.showQuestionText);
+
+          if (isReviewOnlySessionStatus(loadedSession.status)) {
+            completionRedirectRef.current = true;
+            setSession(loadedSession);
+            router.replace(`/report/${sessionId}`);
+            return;
+          }
+
+          if (loadedSession.status === "paused") {
+            try {
+              const resumeResponse = await api.post<{ session: SessionDetails }>(`/sessions/${sessionId}/resume`);
+              if (cancelled) return;
+              loadedSession = resumeResponse.data.session;
+              sessionStatusRef.current = loadedSession.status;
+              setNotice("Paused session restored. Continue from the saved question when ready.");
+            } catch {
+              setError("This session is paused, but it could not be resumed. Try opening it again from Practice.");
+            }
+          }
+
+          if (hasPersistedAgentState(loadedSession)) {
+            agentPlanStartedRef.current = true;
+            agentStateRef.current = asRecord(loadedSession.state);
+          }
+          setSession(loadedSession);
+          if (hasPersistedAgentState(loadedSession)) {
+            await restoreSessionFromSavedStateRef.current(loadedSession);
+          }
         }
         if (consentResponse.status === "fulfilled") {
           setRecordingConsentAccepted(Boolean(consentResponse.value.data.latest?.accepted));
@@ -277,7 +443,7 @@ export default function LiveSessionPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasHydrated, isAuthenticated, sessionId]);
+  }, [hasHydrated, isAuthenticated, router, sessionId]);
 
   useEffect(() => {
     if (socketStatus === "connected" && sessionState === "connecting") {
@@ -286,7 +452,7 @@ export default function LiveSessionPage() {
   }, [socketStatus, sessionState]);
 
   const uploadAnswerBlob = useCallback(
-    async (audioBlob: Blob, durationMs: number, turnId: string | null) => {
+    async (audioBlob: Blob, durationMs: number, turnId: string | null, browserTranscript?: string) => {
       if (!turnId) {
         throw new Error("missing_turn_id");
       }
@@ -305,12 +471,13 @@ export default function LiveSessionPage() {
       setPendingUpload(null);
       setManualAnswerText("");
       setNotice("Answer uploaded. ASR is processing...");
-      await processUploadedAnswerRef.current(audioId, audioBlob, durationMs, turnId);
+      await processUploadedAnswerRef.current(audioId, audioBlob, durationMs, turnId, browserTranscript);
     },
     [sendMessage, sessionId],
   );
 
   const handleStopRecording = useCallback(async () => {
+    if (isExitingSessionRef.current) return;
     if (!isRecording) return;
     if (isStoppingRecordingRef.current) return;
 
@@ -340,27 +507,36 @@ export default function LiveSessionPage() {
     }
 
     let recordedAudioBlob: Blob | null = null;
+    let browserTranscript = "";
+    let browserTranscriptPromise: Promise<string> | null = null;
     try {
+      browserTranscriptPromise = stopBrowserSpeechRecognition().catch(() => "");
       recordedAudioBlob = await stopRecording();
+      browserTranscript = browserTranscriptPromise ? await browserTranscriptPromise : "";
       const audioBlob = recordedAudioBlob;
       if (audioBlob.size <= 0) {
         throw new Error("empty_recording");
       }
-      await uploadAnswerBlob(audioBlob, durationMs, currentTurnId);
+      await uploadAnswerBlob(audioBlob, durationMs, currentTurnId, browserTranscript);
     } catch (err: unknown) {
       const apiError = err as ApiError;
       if (err instanceof Error && err.message === "empty_recording") {
         setError("No audio was captured. Please start speaking again.");
       } else if (err instanceof Error && err.message === "missing_turn_id") {
         setError("The current question is not ready yet. Reconnect or wait for the examiner question to load.");
+      } else if (err instanceof Error && (err.message === "synthetic_asr_transcript" || err.message === "transcript_unavailable")) {
+        if (recordedAudioBlob && recordedAudioBlob.size > 0) {
+          setPendingUpload({ blob: recordedAudioBlob, durationMs, turnId: currentTurnId, createdAt: Date.now(), browserTranscript });
+        }
+        setError("No usable transcript was captured for this answer. Retry upload or continue with typed text.");
       } else if (err instanceof Error && err.message === "answer_processing_failed") {
         if (recordedAudioBlob && recordedAudioBlob.size > 0) {
-          setPendingUpload({ blob: recordedAudioBlob, durationMs, turnId: currentTurnId, createdAt: Date.now() });
+          setPendingUpload({ blob: recordedAudioBlob, durationMs, turnId: currentTurnId, createdAt: Date.now(), browserTranscript });
         }
         setError("Audio was captured, but ASR or next-question processing failed. Retry upload or continue with typed text.");
       } else {
         if (recordedAudioBlob && recordedAudioBlob.size > 0) {
-          setPendingUpload({ blob: recordedAudioBlob, durationMs, turnId: currentTurnId, createdAt: Date.now() });
+          setPendingUpload({ blob: recordedAudioBlob, durationMs, turnId: currentTurnId, createdAt: Date.now(), browserTranscript });
         }
         setError(apiError.response?.data?.message || "Audio upload failed. Keep this answer here and choose Retry upload or Continue without audio.");
         sendMessage("error.recoverable", {
@@ -373,7 +549,7 @@ export default function LiveSessionPage() {
     } finally {
       isStoppingRecordingRef.current = false;
     }
-  }, [currentTurnId, isRecording, sendMessage, stopRecording, uploadAnswerBlob]);
+  }, [currentTurnId, isRecording, sendMessage, stopBrowserSpeechRecognition, stopRecording, uploadAnswerBlob]);
 
   const retryPendingUpload = async () => {
     if (!pendingUpload) return;
@@ -382,7 +558,7 @@ export default function LiveSessionPage() {
     setNotice("Retrying saved audio upload...");
     setSessionState("processing");
     try {
-      await uploadAnswerBlob(pendingUpload.blob, pendingUpload.durationMs, pendingUpload.turnId);
+      await uploadAnswerBlob(pendingUpload.blob, pendingUpload.durationMs, pendingUpload.turnId, pendingUpload.browserTranscript);
     } catch (err: unknown) {
       const apiError = err as ApiError;
       setError(apiError.response?.data?.message || "Retry upload failed. The local recording is still available.");
@@ -463,35 +639,61 @@ export default function LiveSessionPage() {
         currentTurnIdRef.current = payload.turn_id ?? null;
         setCurrentTurnId(payload.turn_id ?? null);
         {
+          const audioId = payload.audio_id ?? payload.audio_asset_id ?? null;
+          isReplayingRef.current = false;
+          setIsReplaying(false);
+          questionPlaybackDoneRef.current = !audioId;
+          setExaminerAudioId(audioId);
+        }
+        {
           const eventPart = payload.part ?? currentPartRef.current;
-          const speakingSeconds = payload.timer_policy?.speaking_seconds ?? payload.timer_policy?.suggested_seconds ?? 0;
-          const preparationSeconds = payload.timer_policy?.preparation_seconds ?? 0;
-          const shouldPrepareFirst = eventPart === 2 && preparationSeconds > 0;
-          speakingSecondsRef.current = speakingSeconds;
-          timerPhaseRef.current = shouldPrepareFirst ? "preparation" : "speaking";
-          setSuggestedSeconds(shouldPrepareFirst ? preparationSeconds : speakingSeconds);
+          const plan = resolveTimerPlan(
+            {
+              part: eventPart,
+              preparationSeconds: payload.timer_policy?.preparation_seconds,
+              speakingSeconds: payload.timer_policy?.speaking_seconds ?? payload.timer_policy?.suggested_seconds,
+            },
+            examSettingsRef.current,
+          );
+          speakingSecondsRef.current = plan.speakingSeconds;
+          timerPhaseRef.current = plan.phase;
+          setSuggestedSeconds(plan.countdownSeconds);
         }
         setAsrText("");
+        resetBrowserSpeechRecognition();
         setNotice("");
         setSessionState("examiner_speaking");
         break;
       case "examiner.audio_ready":
+        isReplayingRef.current = false;
+        setIsReplaying(false);
+        questionPlaybackDoneRef.current = !payload.audio_id;
         setExaminerAudioId(payload.audio_id ?? null);
-        setAudioReplayKey((current) => current + 1);
         setSessionState("examiner_speaking");
         break;
       case "timer.started":
         {
           const eventPart = payload.part ?? currentPartRef.current;
-          const speakingSeconds = payload.speaking_seconds ?? payload.suggested_seconds ?? payload.duration_seconds ?? 0;
-          const preparationSeconds = payload.preparation_seconds ?? 0;
-          const shouldPrepareFirst = payload.purpose === "preparation" || payload.phase === "prepare_then_speak" || (eventPart === 2 && preparationSeconds > 0);
-          speakingSecondsRef.current = speakingSeconds;
-          timerPhaseRef.current = shouldPrepareFirst ? "preparation" : "speaking";
-          setSuggestedSeconds(shouldPrepareFirst ? preparationSeconds || payload.duration_seconds || payload.suggested_seconds || 0 : speakingSeconds);
-        }
-        if (timerPhaseRef.current === "preparation") {
-          setSessionState("user_preparing");
+          const fallbackPreparationSeconds =
+            payload.purpose === "preparation" ? payload.duration_seconds ?? payload.suggested_seconds : undefined;
+          const plan = resolveTimerPlan(
+            {
+              part: eventPart,
+              preparationSeconds: payload.preparation_seconds ?? fallbackPreparationSeconds,
+              speakingSeconds: payload.speaking_seconds ?? payload.suggested_seconds ?? payload.duration_seconds,
+              purpose: payload.purpose,
+              phase: payload.phase,
+            },
+            examSettingsRef.current,
+          );
+          speakingSecondsRef.current = plan.speakingSeconds;
+          timerPhaseRef.current = plan.phase;
+          setSuggestedSeconds(plan.countdownSeconds);
+          // 考官题目音频还在播放（或等待自动播放）时不进入思考倒计时，
+          // 等音频播完由 onFinished 推进，保证 Part 2 进场时会先自动读题。
+          if (plan.phase === "preparation" && questionPlaybackDoneRef.current) {
+            setSessionState("user_preparing");
+          }
         }
         break;
       case "asr.final":
@@ -500,7 +702,7 @@ export default function LiveSessionPage() {
         setSessionState("idle");
         break;
       case "agent.followup_planned":
-        setNotice(`${payload.decision ?? "Follow-up planned"}: ${payload.reason ?? ""}`);
+        setNotice("Operation completed.");;
         break;
       case "part.completed":
         if (payload.part) {
@@ -509,13 +711,17 @@ export default function LiveSessionPage() {
         setSessionState("idle");
         break;
       case "session.completed":
+        completionRedirectRef.current = true;
+        sessionStatusRef.current = "scoring";
         setCompletedParts(payload.completed_parts ?? [1, 2, 3]);
         setSessionState("processing");
         setNotice("Session complete. Generating your score report...");
         break;
       case "report.ready":
+        completionRedirectRef.current = true;
+        sessionStatusRef.current = "completed";
         setSessionState("completed");
-        router.push(`/report/${sessionId}`);
+        router.replace(`/report/${sessionId}`);
         break;
       case "error.recoverable":
         setError(payload.message || "A recoverable issue happened. Please retry.");
@@ -526,12 +732,12 @@ export default function LiveSessionPage() {
         setTimeout(() => router.push("/practice"), 1600);
         break;
     }
-  }, [router, sessionId]);
+  }, [resetBrowserSpeechRecognition, router, sessionId]);
 
   useVAD(
     isRecording,
     () => {
-      if (sessionState === "user_speaking") {
+      if (sessionState === "user_speaking" && examSettingsRef.current.autoStopRecording) {
         setNotice("Silence detected, processing your answer...");
         sendMessage("user.silence_detected", {});
         void handleStopRecording();
@@ -542,6 +748,7 @@ export default function LiveSessionPage() {
     {
       minRecordingMsBeforeSilence: vadMinimumBeforeSilenceMs,
       requireSpeechBeforeSilence: true,
+      allowOwnStream: false,
     },
   );
 
@@ -585,44 +792,147 @@ export default function LiveSessionPage() {
   }
 
   async function dispatchAgentResponse(response: AgentResponse) {
-    agentStateRef.current = response.state ?? {};
+    const preparedEvents: SessionEvent[] = [];
     for (const event of response.events ?? []) {
-      applySessionEvent(await prepareAgentEvent(event));
+      preparedEvents.push(await prepareAgentEvent(event));
+    }
+    agentStateRef.current = response.state ?? {};
+    await persistAgentState(agentStateRef.current);
+    for (const event of preparedEvents) {
+      applySessionEvent(event);
+    }
+  }
+
+  async function persistAgentState(state: Record<string, unknown> | null) {
+    if (!state || Object.keys(state).length === 0) return;
+    try {
+      await api.patch(`/sessions/${sessionId}/state`, { state });
+    } catch {
+      // 状态持久化失败不阻断当前答题流，页面内存中的状态仍会继续推进。
+    }
+  }
+
+  async function restoreSessionFromSavedState(savedSession: SessionDetails) {
+    const savedState = asRecord(savedSession.state);
+    if (!savedState || !hasPersistedAgentState(savedSession)) return false;
+
+    agentPlanStartedRef.current = true;
+    agentStateRef.current = savedState;
+
+    const restoredPart = numberFromUnknown(savedState.current_part) ?? inferCurrentPart(savedSession) ?? 1;
+    currentPartRef.current = restoredPart;
+    setCurrentPart(restoredPart);
+    setCompletedParts(numberArrayFromUnknown(savedState.completed_parts));
+
+    const plannedQuestion = currentPlannedQuestionFromState(savedState, savedSession);
+    const plannedQuestionText = typeof plannedQuestion?.text === "string" ? plannedQuestion.text : "";
+    let pendingTurn = findPendingAnswerTurn(savedSession, plannedQuestionText);
+    if (!pendingTurn && plannedQuestionText) {
+      pendingTurn = await createPendingTurnForResume(restoredPart, plannedQuestionText, plannedQuestion);
+    }
+
+    const restoredQuestionText = pendingTurn?.question_text || plannedQuestionText;
+    currentTurnIdRef.current = pendingTurn?.id ?? null;
+    setCurrentTurnId(pendingTurn?.id ?? null);
+    setExaminerText(restoredQuestionText || "Session restored. Reconnect if the current examiner question is missing.");
+    setCueCard(cueCardFromPlannedQuestion(plannedQuestion));
+    setPracticeHints(stringArrayFromUnknown(savedState.practice_hints));
+
+    const topicGuidance = asRecord(savedState.topic_guidance);
+    setTopicVocabulary(stringArrayFromUnknown(topicGuidance?.vocabulary));
+    {
+      const restoredPlan = restoredTimerPlanFromSavedState(savedState, restoredPart, plannedQuestion, examSettingsRef.current);
+      speakingSecondsRef.current = restoredPlan.speakingSeconds;
+      timerPhaseRef.current = "idle";
+      questionPlaybackDoneRef.current = true;
+      setSuggestedSeconds(restoredPlan.countdownSeconds);
+    }
+    setAsrText("");
+    setSessionState("idle");
+    if (restoredQuestionText) {
+      setNotice("Session restored. Continue from the saved question when ready.");
+    }
+    return true;
+  }
+
+  async function createPendingTurnForResume(part: number, questionText: string, plannedQuestion: Record<string, unknown> | null) {
+    try {
+      const response = await api.post<{ turn: NonNullable<SessionDetails["turns"]>[number] }>(`/sessions/${sessionId}/turns`, {
+        part,
+        speaker: "user",
+        status: "pending",
+        question_text: questionText,
+        question_id: typeof plannedQuestion?.question_id === "string" ? plannedQuestion.question_id : undefined,
+        metadata: {
+          source: "web_live_resume",
+          restored_from_session_state: true,
+        },
+      });
+      return response.data.turn;
+    } catch {
+      setError("Saved question was restored, but the answer turn could not be prepared. Use Reconnect before recording.");
+      return null;
     }
   }
 
   async function prepareAgentEvent(event: SessionEvent) {
     if (event.type !== "examiner.message") return event;
     const payload = event.payload as LiveEventPayload;
-    if (payload.turn_id || !payload.text) return event;
+    if (!payload.text) return event;
 
+    let turnId = payload.turn_id;
     try {
-      const response = await api.post<{ turn: { id: string } }>(`/sessions/${sessionId}/turns`, {
-        part: payload.part ?? currentPartRef.current,
-        speaker: "user",
-        status: "pending",
-        question_text: payload.text,
-        metadata: {
-          source: "agent_harness_live",
-          agent_run_id: event.run_id,
-          agent_question_id: payload.question_id,
-          event_type: event.type,
-        },
-      });
-      return {
-        ...event,
-        payload: {
-          ...payload,
-          turn_id: response.data.turn.id,
-        },
-      };
+      if (!turnId) {
+        const response = await api.post<{ turn: { id: string } }>(`/sessions/${sessionId}/turns`, {
+          part: payload.part ?? currentPartRef.current,
+          speaker: "user",
+          status: "pending",
+          question_text: payload.text,
+          metadata: {
+            source: "agent_harness_live",
+            agent_run_id: event.run_id,
+            agent_question_id: payload.question_id,
+            event_type: event.type,
+          },
+        });
+        turnId = response.data.turn.id;
+      }
     } catch {
       setError("The answer turn could not be prepared. Reconnect before recording.");
       return event;
     }
+
+    const audioId = payload.audio_id ?? payload.audio_asset_id ?? (await synthesizeExaminerAudio(turnId, payload.text));
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        turn_id: turnId,
+        ...(audioId ? { audio_id: audioId, audio_asset_id: audioId } : {}),
+      },
+    };
   }
 
-  async function processUploadedAnswer(audioId: string, audioBlob: Blob, durationMs: number, turnId: string) {
+  async function synthesizeExaminerAudio(turnId: string, text: string) {
+    try {
+      const state = asRecord(session?.state);
+      const voiceId = stringOrNull(state?.examiner_voice) ?? "ielts_examiner_default";
+      const response = await api.post<SynthesizeTTSResponse>("/audio/tts", {
+        session_id: sessionId,
+        turn_id: turnId,
+        text,
+        voice_id: voiceId,
+        speaking_rate: 1.0,
+        style: "examiner",
+      });
+      return response.data.audio_asset.id;
+    } catch (err) {
+      console.warn("Examiner TTS could not be saved for replay", err);
+      return null;
+    }
+  }
+
+  async function processUploadedAnswer(audioId: string, audioBlob: Blob, durationMs: number, turnId: string, browserTranscript?: string) {
     try {
       let audioBase64: string | undefined;
       let audioUrl: string | undefined;
@@ -638,7 +948,8 @@ export default function LiveSessionPage() {
         audioUrl = undefined;
       }
 
-      let transcript: TranscribeAudioResponse;
+      let transcript: TranscribeAudioResponse | null = null;
+      let forcedSelectedTranscript: SelectedTranscript | null = null;
       try {
         const transcribeResponse = await agentApi.post<TranscribeAudioResponse>("/agent/audio/transcribe", {
           audio_asset_id: audioId,
@@ -649,38 +960,84 @@ export default function LiveSessionPage() {
         });
         transcript = transcribeResponse.data;
       } catch (err) {
-        if (!shouldUseWebAsrFallback(err)) {
+        if (!shouldUseBrowserTranscriptFallback(err)) {
           throw err;
         }
-        transcript = buildWebAsrFallbackTranscript(audioId, audioBlob, durationMs, err);
-        setNotice("ASR service used a local fallback transcript so this turn can continue.");
+        transcript = buildBrowserTranscriptFallback(audioId, audioBlob, durationMs, browserTranscript, null, err);
+        if (!transcript) {
+          transcript = buildUnavailableTranscriptFallback(audioId, audioBlob, durationMs, null, err, "service_unavailable");
+          forcedSelectedTranscript = {
+            transcript: "",
+            source: "none",
+            reason: "service_unavailable",
+          };
+          setNotice("Audio was captured, but no transcript was recognized. This turn continued with an empty answer. 已继续提交空回答。");
+        } else {
+          forcedSelectedTranscript = {
+            transcript: transcript.asr_text,
+            source: "browser",
+            reason: "service_unavailable",
+          };
+          setNotice("ASR service was unavailable, so this turn continued with browser speech recognition. 已改用浏览器语音识别兜底。");
+        }
+      }
+      if (!transcript) {
+        transcript = buildUnavailableTranscriptFallback(audioId, audioBlob, durationMs, null, null, "service_unavailable");
+      }
+
+      let selectedTranscript: SelectedTranscript = forcedSelectedTranscript ?? choosePreferredTranscript({
+        serviceTranscript: transcript,
+        browserTranscript,
+      });
+      if (!selectedTranscript.transcript) {
+        if (transcript.provider !== "transcript_unavailable") {
+          transcript = buildUnavailableTranscriptFallback(audioId, audioBlob, durationMs, transcript, null, selectedTranscript.reason);
+        }
+        selectedTranscript = {
+          transcript: "",
+          source: "none",
+          reason: selectedTranscript.reason,
+        };
+        setNotice("Audio was captured, but no transcript was recognized. This turn continued with an empty answer. 已继续提交空回答。");
+      }
+
+      if (selectedTranscript.source === "browser" && transcript.provider !== "browser_speech_recognition") {
+        transcript = buildBrowserTranscriptFallback(audioId, audioBlob, durationMs, selectedTranscript.transcript, transcript);
+        if (!transcript) {
+          throw new Error("transcript_unavailable");
+        }
+        setNotice("The upstream ASR response was unusable, so this turn continued with browser speech recognition. 已改用浏览器语音识别转写。");
       }
 
       await api.post(`/sessions/${sessionId}/turns/${turnId}/asr-results`, {
         audio_asset_id: audioId,
         provider: transcript.provider,
         model: transcript.model,
-        transcript: transcript.asr_text,
+        transcript: selectedTranscript.transcript,
         confidence: transcript.confidence ?? undefined,
         raw_response: {
           source: "agent_harness_transcribe",
-          metadata: transcript.metadata ?? {},
+          metadata: {
+            ...(transcript.metadata ?? {}),
+            transcript_source: selectedTranscript.source,
+          },
         },
       });
 
       void api.post(`/sessions/${sessionId}/turns/${turnId}/speech-metrics`, {
         audio_asset_id: audioId,
         duration_ms: durationMs,
-        transcript: transcript.asr_text,
+        transcript: selectedTranscript.transcript,
         asr_confidence: transcript.confidence ?? undefined,
         raw_metrics: {
           source: "web_live_auto",
+          transcript_source: selectedTranscript.source,
         },
       }).catch(() => undefined);
 
       const consumeResponse = await agentApi.post<AgentResponse>(`/agent/sessions/${sessionId}/consume-asr`, {
         turn_id: turnId,
-        asr_text: transcript.asr_text,
+        asr_text: selectedTranscript.transcript,
         audio_asset_id: audioId,
         asr_confidence: transcript.confidence ?? undefined,
         session_state: agentStateRef.current ?? {},
@@ -689,6 +1046,9 @@ export default function LiveSessionPage() {
       await continueAgentFlow(consumeResponse.data);
     } catch (err) {
       console.error("Answer processing failed", err);
+      if (err instanceof Error && (err.message === "synthetic_asr_transcript" || err.message === "transcript_unavailable")) {
+        throw err;
+      }
       throw new Error("answer_processing_failed");
     }
   }
@@ -739,24 +1099,28 @@ export default function LiveSessionPage() {
     }
 
     if (response.next_action === "score_session") {
+      completionRedirectRef.current = true;
       await scorePersistAndFinish(response.state);
       return;
     }
 
     if (response.next_action === "finish_session") {
-      if (hasScoreReport(response)) {
-        await api.post(`/sessions/${sessionId}/finish`).catch(() => undefined);
+      completionRedirectRef.current = true;
+      if (hasPersistableScoreReport(response)) {
+        await api.post(`/sessions/${sessionId}/finish`);
         await persistScoreReport(response);
         await dispatchAgentResponse(response);
         return;
       }
-      void api.post(`/sessions/${sessionId}/finish`).catch(() => undefined);
+      await api.post(`/sessions/${sessionId}/finish`);
     }
   }
 
   async function scorePersistAndFinish(sessionState: Record<string, unknown>) {
     if (scoringInProgressRef.current) return;
     scoringInProgressRef.current = true;
+    completionRedirectRef.current = true;
+    sessionStatusRef.current = "scoring";
     setSessionState("processing");
     setNotice("Generating your score report...");
     setError("");
@@ -764,11 +1128,21 @@ export default function LiveSessionPage() {
       const scoringResponse = await agentApi.post<AgentResponse>(`/agent/sessions/${sessionId}/score`, {
         session_state: sessionState,
       });
-      await api.post(`/sessions/${sessionId}/finish`).catch(() => undefined);
+      if (!hasPersistableScoreReport(scoringResponse.data)) {
+        await dispatchAgentResponse(scoringResponse.data);
+        setError(scoreRetryMessage(scoringResponse.data) || "No score report was generated. Please submit at least one scorable answer before finishing.");
+        setNotice("");
+        setSessionState("idle");
+        completionRedirectRef.current = false;
+        sessionStatusRef.current = session?.status ?? null;
+        return;
+      }
+
+      await api.post(`/sessions/${sessionId}/finish`);
       await persistScoreReport(scoringResponse.data);
       await dispatchAgentResponse(scoringResponse.data);
       if (!scoringResponse.data.events.some((event) => event.type === "report.ready")) {
-        router.push(`/report/${sessionId}`);
+        router.replace(`/report/${sessionId}`);
       }
     } catch (err) {
       console.error("Score report generation failed", err);
@@ -795,6 +1169,7 @@ export default function LiveSessionPage() {
   }
 
   startAgentPlanRef.current = startAgentPlan;
+  restoreSessionFromSavedStateRef.current = restoreSessionFromSavedState;
   processUploadedAnswerRef.current = processUploadedAnswer;
 
   const acceptRecordingConsent = async () => {
@@ -812,6 +1187,7 @@ export default function LiveSessionPage() {
       });
       setRecordingConsentAccepted(true);
       setNotice("Recording consent saved.");
+      void primeMicrophone();
     } catch {
       setError("Recording consent could not be saved.");
     } finally {
@@ -820,6 +1196,7 @@ export default function LiveSessionPage() {
   };
 
   const beginUserRecording = async () => {
+    if (isExitingSessionRef.current || isRecordingRef.current || isRecordingStartingRef.current) return;
     if (!recordingConsentAccepted) {
       setError("Recording consent is required before speaking.");
       return;
@@ -836,6 +1213,11 @@ export default function LiveSessionPage() {
     }
     try {
       await startRecording();
+      if (isExitingSessionRef.current) {
+        discardRecording();
+        return;
+      }
+      startBrowserSpeechRecognition();
       recordingStartedAtRef.current = Date.now();
       timerPhaseRef.current = "speaking";
       if (speakingSecondsRef.current > 0) {
@@ -843,23 +1225,68 @@ export default function LiveSessionPage() {
       }
       setSessionState("user_speaking");
       sendMessage("user.recording_started", { turn_id: currentTurnIdRef.current });
-    } catch {
+    } catch (err) {
       recordingStartedAtRef.current = null;
-      setError("Microphone recording is not available in this browser. Check permission, HTTPS/localhost access, or try another supported browser.");
+      if (err instanceof Error && err.message === "recording_cancelled") {
+        return;
+      }
+      setError(microphoneStartErrorMessage(err));
     }
   };
 
+  const cancelOpeningMicrophone = () => {
+    releaseLocalRecordingResources();
+    setNotice("Microphone opening cancelled. Tap Start speaking when you are ready.");
+  };
+
   const replayQuestion = () => {
-    if (!examinerAudioId) return;
-    setAudioReplayKey((current) => current + 1);
-    setSessionState("examiner_speaking");
+    if (!examinerAudioId || isRecording || isRecordingStarting) return;
+    isReplayingRef.current = true;
+    setIsReplaying(true);
+    audioPlayerRef.current?.replay();
   };
 
   const handleReconnect = () => {
     reconnect();
     if (!currentTurnIdRef.current) {
+      if (session && hasPersistedAgentState(session)) {
+        void restoreSessionFromSavedState(session);
+        return;
+      }
       agentPlanStartedRef.current = false;
       void startAgentPlanRef.current();
+    }
+  };
+
+  const pauseCurrentSession = async () => {
+    if (completionRedirectRef.current || !isPauseableSessionStatus(sessionStatusRef.current) || pauseRequestInFlightRef.current) return;
+    pauseRequestInFlightRef.current = true;
+    try {
+      await persistAgentState(agentStateRef.current);
+      const response = await api.post<{ session: SessionDetails }>(`/sessions/${sessionId}/pause`);
+      sessionStatusRef.current = response.data.session.status;
+      setSession(response.data.session);
+    } finally {
+      pauseRequestInFlightRef.current = false;
+    }
+  };
+
+  const discardActiveRecording = async () => {
+    releaseLocalRecordingResources();
+    setSessionState("idle");
+  };
+
+  const handleExitSession = async () => {
+    isExitingSessionRef.current = true;
+    setError("");
+    setNotice("Pausing session...");
+    try {
+      await discardActiveRecording();
+      await pauseCurrentSession();
+    } catch {
+      setError("Session pause could not be confirmed, but you can still reopen recent in-progress sessions from Practice.");
+    } finally {
+      router.push("/practice");
     }
   };
 
@@ -868,10 +1295,58 @@ export default function LiveSessionPage() {
   return (
     <AcademicShell activePath="/practice" userName={user?.display_name || user?.email} userRole={user?.role} className="pb-28 md:pb-8">
       <AudioPlayer
-        key={`${examinerAudioId}-${audioReplayKey}`}
+        ref={audioPlayerRef}
         audioId={examinerAudioId}
+        onAutoplayBlocked={() => {
+          const wasReplay = isReplayingRef.current;
+          isReplayingRef.current = false;
+          setIsReplaying(false);
+          if (wasReplay) return;
+          if (!questionPlaybackDoneRef.current) {
+            questionPlaybackDoneRef.current = true;
+            if (sessionState === "examiner_speaking") {
+              if (timerPhaseRef.current === "preparation") {
+                setSessionState("user_preparing");
+                setNotice("浏览器阻止了考官音频自动播放，思考倒计时已开始。您可点击 Replay 收听考官语音。");
+              } else {
+                setSessionState("idle");
+                setNotice("浏览器阻止了考官音频自动播放。请点击 Replay 收听语音，或直接点击 Start speaking 开始作答。");
+              }
+              return;
+            }
+          }
+          setNotice("浏览器阻止了考官音频自动播放。您可点击 Replay 收听考官语音。");
+        }}
+        onPlaybackError={() => {
+          isReplayingRef.current = false;
+          setIsReplaying(false);
+          if (!questionPlaybackDoneRef.current) {
+            questionPlaybackDoneRef.current = true;
+            if (sessionState === "examiner_speaking") {
+              if (timerPhaseRef.current === "preparation") {
+                setSessionState("user_preparing");
+              } else {
+                setSessionState("idle");
+              }
+            }
+          }
+          setError("考官音频加载失败。请点击 Replay 重试，或直接点击 Start speaking 开始作答。");
+        }}
         onFinished={() => {
-          if (sessionState === "examiner_speaking") {
+          const wasReplay = isReplayingRef.current;
+          const action = examinerAudioFinishAction({
+            sessionState,
+            questionPlaybackDone: questionPlaybackDoneRef.current,
+            timerPhase: timerPhaseRef.current,
+            isReplay: wasReplay,
+          });
+          questionPlaybackDoneRef.current = true;
+          isReplayingRef.current = false;
+          setIsReplaying(false);
+          if (isExitingSessionRef.current) return;
+          if (action === "start_preparation") {
+            setSessionState("user_preparing");
+          } else if (action === "start_recording") {
             void beginUserRecording();
           }
         }}
@@ -889,19 +1364,19 @@ export default function LiveSessionPage() {
               {socketStatus === "connected" ? <Wifi className="mr-1 h-3 w-3" /> : <WifiOff className="mr-1 h-3 w-3" />}
               {socketStatus}
             </StatusBadge>
-            <Button type="button" variant="soft" onClick={() => router.push("/practice")}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Practice
+            <Button type="button" variant="soft" onClick={() => void handleExitSession()}>
+              <PauseCircle className="mr-2 h-4 w-4" />
+              Pause & exit
             </Button>
           </>
         }
       />
 
       {!consentLoading && !recordingConsentAccepted && (
-        <Panel className="border-[#D4AF37]/35 bg-[#FFF8DF]">
+        <Panel className="border-academic-score/35 bg-academic-score-soft">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex gap-3">
-              <ShieldCheck className="mt-1 h-5 w-5 text-[#8A6F1D]" />
+              <ShieldCheck className="mt-1 h-5 w-5 text-amber-800" />
               <div>
                 <h2 className="text-sm font-semibold text-slate-950">Recording Consent 录音授权</h2>
                 <p className="mt-1 text-sm leading-6 text-slate-600">
@@ -926,7 +1401,7 @@ export default function LiveSessionPage() {
         </Panel>
       )}
       {pendingUpload && (
-        <Panel className="border-[#D4AF37]/35 bg-[#FFF8DF]">
+        <Panel className="border-academic-score/35 bg-academic-score-soft">
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -940,7 +1415,7 @@ export default function LiveSessionPage() {
               <textarea
                 value={manualAnswerText}
                 onChange={(event) => setManualAnswerText(event.target.value)}
-                className="mt-3 min-h-20 w-full resize-y rounded-md border border-[#E9DFC6] bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-[#D4AF37] focus:ring-2 focus:ring-[#D4AF37]/20"
+                className="mt-3 min-h-20 w-full resize-y rounded-md border border-academic-paper-border bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-academic-score focus:ring-2 focus:ring-academic-score/20"
                 placeholder="Type your answer here if you need to continue without the audio file."
               />
             </div>
@@ -958,7 +1433,7 @@ export default function LiveSessionPage() {
         </Panel>
       )}
       {notice && (
-        <Panel className="border-[#3A7CA5]/20 bg-[#EAF5FA] text-sm text-[#2F6384]">
+        <Panel className="border-academic-accent/20 bg-academic-accent-soft text-sm text-blue-800">
           {notice}
         </Panel>
       )}
@@ -966,7 +1441,7 @@ export default function LiveSessionPage() {
       <Panel className="lg:hidden">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-[#3A7CA5]">Session Progress</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-academic-accent">Session Progress</p>
             <p className="text-sm font-semibold text-slate-900">
               Part {currentPart} · {formatState(sessionState)}
             </p>
@@ -974,11 +1449,11 @@ export default function LiveSessionPage() {
           <StatusBadge tone={socketStatus === "connected" ? "sage" : "coral"}>{socketStatus}</StatusBadge>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-          <div className="h-full rounded-full bg-[#D4AF37]" style={{ width: `${Math.max(progressPercent, ((activeStepIndex + 1) / 4) * 18)}%` }} />
+          <div className="h-full rounded-full bg-academic-score" style={{ width: `${Math.max(progressPercent, ((activeStepIndex + 1) / 4) * 18)}%` }} />
         </div>
         <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[11px] text-slate-500">
           {timeline.map((item) => (
-            <span key={item.part} className={item.part === currentPart ? "font-semibold text-[#8A6F1D]" : ""}>
+            <span key={item.part} className={item.part === currentPart ? "font-semibold text-amber-800" : ""}>
               {item.label}
             </span>
           ))}
@@ -998,7 +1473,7 @@ export default function LiveSessionPage() {
                 <div key={item.part} className="relative flex gap-3">
                   <span
                     className={`z-10 flex h-8 w-8 items-center justify-center rounded-full border bg-white ${
-                      completed ? "border-[#4F8A6B] text-[#4F8A6B]" : active ? "border-[#D4AF37] text-[#D4AF37]" : "border-slate-200 text-slate-400"
+                      completed ? "border-emerald-600 text-emerald-600" : active ? "border-academic-score text-academic-score" : "border-slate-200 text-slate-400"
                     }`}
                   >
                     {completed ? <CheckCircle2 className="h-4 w-4" /> : item.part}
@@ -1033,30 +1508,48 @@ export default function LiveSessionPage() {
           <div className="border-b border-white/10 px-4 py-4 sm:px-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-semibold uppercase tracking-wide text-[#D4AF37]">{formatMode(session?.mode)} · Part {currentPart}</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-academic-score">{formatMode(session?.mode)} · Part {currentPart}</p>
                 <h2 className="mt-1 font-serif text-2xl text-white">Examiner Stage</h2>
               </div>
-              <StatusBadge tone={sessionState === "processing" ? "coral" : sessionState === "user_speaking" ? "red" : "teal"}>
-                {formatState(sessionState)}
-              </StatusBadge>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="soft"
+                  size="sm"
+                  className="px-3 text-xs"
+                  onClick={() => setShowQuestionText((current) => !current)}
+                >
+                  {showQuestionText ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}
+                  {showQuestionText ? "Hide text 隐藏文案" : "Show text 显示文案"}
+                </Button>
+                <StatusBadge tone={sessionState === "processing" ? "coral" : sessionState === "user_speaking" ? "red" : "teal"}>
+                  {formatState(sessionState)}
+                </StatusBadge>
+              </div>
             </div>
           </div>
 
           <div className="grid min-h-[560px] min-w-0 max-w-full grid-rows-[1fr_auto] lg:min-h-[620px]">
             <div className="flex min-w-0 flex-col items-center justify-center px-4 py-8 text-center sm:px-5">
               <ExaminerAvatar
-                status={sessionState === "examiner_speaking" ? "speaking" : sessionState === "user_speaking" ? "listening" : "idle"}
-                className="h-28 w-28 border-[#D4AF37]/45 bg-[#111B3B] text-[#D4AF37] sm:h-36 sm:w-36"
+                status={sessionState === "examiner_speaking" || isReplaying ? "speaking" : sessionState === "user_speaking" ? "listening" : "idle"}
+                className="h-28 w-28 border-academic-score/45 bg-academic-navy text-academic-score sm:h-36 sm:w-36"
               />
-              <p className="mt-5 text-xs font-semibold uppercase tracking-[0.22em] text-[#3A7CA5]">
-                Examiner {sessionState === "examiner_speaking" ? "speaking" : sessionState === "user_speaking" ? "listening" : "ready"}
+              <p className="mt-5 text-xs font-semibold uppercase tracking-[0.22em] text-academic-accent">
+                Examiner {sessionState === "examiner_speaking" || isReplaying ? "speaking" : sessionState === "user_speaking" ? "listening" : "ready"}
               </p>
-              <h3 className="mt-4 w-full max-w-3xl break-words font-serif text-xl leading-relaxed text-white sm:text-2xl md:text-3xl">
-                &quot;{examinerText}&quot;
-              </h3>
+              {showQuestionText ? (
+                <h3 className="mt-4 w-full max-w-3xl break-words font-serif text-xl leading-relaxed text-white sm:text-2xl md:text-3xl">
+                  &quot;{examinerText}&quot;
+                </h3>
+              ) : (
+                <p className="mt-4 w-full max-w-3xl text-sm italic leading-relaxed text-slate-400">
+                  Question text hidden. 考题文案已隐藏，请听考官语音，可点击 Show text 重新显示。
+                </p>
+              )}
 
-              {cueCard && (
-                <div className="mt-6 w-full max-w-2xl overflow-hidden rounded-lg border border-[#D4AF37]/30 bg-[#F7F4EA] p-3 text-left text-[#0B132B] sm:p-4">
+              {cueCard && showQuestionText && (
+                <div className="mt-6 w-full max-w-2xl overflow-hidden rounded-lg border border-academic-score/30 bg-academic-paper p-3 text-left text-academic-navy sm:p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <StatusBadge tone="gold">Cue Card</StatusBadge>
@@ -1068,12 +1561,19 @@ export default function LiveSessionPage() {
                     <ul className="mt-4 grid gap-2 text-sm leading-6 text-slate-700">
                       {cueCard.bullet_points.map((point, index) => (
                         <li key={`${point}-${index}`} className="flex gap-2">
-                          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#D4AF37]" />
+                          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-academic-score" />
                           <span>{point}</span>
                         </li>
                       ))}
                     </ul>
                   )}
+                </div>
+              )}
+
+              {cueCard && !showQuestionText && (
+                <div className="mt-6 flex w-full max-w-2xl items-center justify-between gap-3 rounded-lg border border-academic-score/30 bg-white/5 px-4 py-3">
+                  <StatusBadge tone="gold">Cue Card · 文案已隐藏</StatusBadge>
+                  <StatusBadge tone="coral">{cueCard.preparation_seconds ?? 60}s prep</StatusBadge>
                 </div>
               )}
 
@@ -1086,7 +1586,11 @@ export default function LiveSessionPage() {
               )}
 
               <div className="mt-6 grid w-full min-w-0 max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
-                <InlineKpi icon={Radio} label="Microphone" value={isRecording ? "Recording" : recordingConsentAccepted ? "Ready" : "Consent required"} />
+                <InlineKpi
+                  icon={Radio}
+                  label="Microphone"
+                  value={isRecording ? "Recording" : isRecordingStarting ? (isRecordingStartSlow ? "Waiting permission" : "Opening") : recordingConsentAccepted ? "Ready" : "Consent required"}
+                />
                 <InlineKpi icon={UploadCloud} label="Turn" value={currentTurnId ? shortId(currentTurnId) : "-"} />
                 <InlineKpi icon={TimerIcon} label="Timer" value={suggestedSeconds > 0 ? `${suggestedSeconds}s` : "Manual"} />
               </div>
@@ -1096,33 +1600,43 @@ export default function LiveSessionPage() {
               <div className="mb-4 grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                 <Waveform active={isRecording} bars={24} className="w-full max-w-full justify-center overflow-hidden md:justify-start" />
                 <div className="flex min-w-0 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
-                  <TimerIcon className="h-4 w-4 text-[#3A7CA5]" />
+                  <TimerIcon className="h-4 w-4 text-academic-accent" />
                   {suggestedSeconds > 0 ? (
                     timerIsActive ? (
                       <Timer
                         key={`${currentTurnId ?? "turn"}-${sessionState}-${suggestedSeconds}`}
                         initialSeconds={suggestedSeconds}
-                        className="bg-transparent p-0 text-lg text-[#D4AF37]"
+                        className="bg-transparent p-0 text-lg text-academic-score"
                         onTimeUp={() => {
                           if (sessionState === "user_preparing") {
                             void beginUserRecording();
                           }
                           if (sessionState === "user_speaking") {
-                            void handleStopRecording();
+                            if (examSettingsRef.current.autoStopRecording) {
+                              void handleStopRecording();
+                            } else {
+                              setNotice("建议作答时间已到，录音仍在继续，准备好后请点击 Finish 提交。Suggested time is up; press Finish when ready.");
+                            }
                           }
                         }}
                       />
                     ) : (
-                      <span className="font-mono text-lg text-[#D4AF37]">{formatTimerSeconds(suggestedSeconds)}</span>
+                      <span className="font-mono text-lg text-academic-score">{formatTimerSeconds(suggestedSeconds)}</span>
                     )
                   ) : (
-                    <span className="font-mono text-lg text-[#D4AF37]">--:--</span>
+                    <span className="font-mono text-lg text-academic-score">--:--</span>
                   )}
                 </div>
               </div>
 
               <div className="fixed bottom-3 left-3 right-3 z-20 grid grid-cols-2 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-2xl backdrop-blur md:static md:flex md:flex-wrap md:border-white/10 md:bg-transparent md:p-0 md:shadow-none">
-                <Button type="button" variant="soft" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={replayQuestion} disabled={!examinerAudioId}>
+                <Button
+                  type="button"
+                  variant="soft"
+                  className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto"
+                  onClick={replayQuestion}
+                  disabled={!examinerAudioId || isRecording || isRecordingStarting}
+                >
                   <Play className="mr-2 h-4 w-4" />
                   Replay
                 </Button>
@@ -1131,8 +1645,13 @@ export default function LiveSessionPage() {
                     <Square className="mr-2 h-4 w-4" />
                     Finish
                   </Button>
+                ) : isRecordingStarting ? (
+                  <Button type="button" variant="soft" size="lg" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={cancelOpeningMicrophone}>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Cancel mic
+                  </Button>
                 ) : (
-                  <Button type="button" variant="gold" size="lg" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={() => void beginUserRecording()} disabled={!currentTurnId || sessionState === "processing" || sessionState === "completed"}>
+                  <Button type="button" variant="gold" size="lg" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={() => void beginUserRecording()} disabled={!currentTurnId || isRecordingStarting || sessionState === "processing" || sessionState === "completed"}>
                     <Mic2 className="mr-2 h-4 w-4" />
                     Start speaking
                   </Button>
@@ -1141,7 +1660,7 @@ export default function LiveSessionPage() {
                   <RefreshCcw className="mr-2 h-4 w-4" />
                   Reconnect
                 </Button>
-                <Button type="button" variant="soft" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={() => setNotice("Issue noted locally. Reconnect is available if the session stalls.")}>
+                <Button type="button" variant="soft" className="w-full min-w-0 px-3 text-xs sm:text-sm md:w-auto" onClick={() => setNotice("Use the support channel if you encounter a session issue.")}>
                   <AlertTriangle className="mr-2 h-4 w-4" />
                   Issue
                 </Button>
@@ -1163,8 +1682,8 @@ export default function LiveSessionPage() {
 
           <Panel>
             <SectionHeading icon={Mic2} label="ASR Echo" labelZh="转写回显" />
-            {asrText ? (
-              <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">&quot;{asrText}&quot;</p>
+            {transcriptPreview ? (
+              <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">&quot;{transcriptPreview}&quot;</p>
             ) : (
               <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-500">
                 Your transcript will appear here after answer upload and ASR processing.
@@ -1179,7 +1698,7 @@ export default function LiveSessionPage() {
               {criteria.map((item) => (
                 <div key={item.name} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                   <span className="text-sm text-slate-600">{item.name}</span>
-                  <span className="font-serif text-lg text-[#3A7CA5]">{item.value}</span>
+                  <span className="font-serif text-lg text-academic-accent">{item.value}</span>
                 </div>
               ))}
             </div>
@@ -1202,6 +1721,127 @@ export default function LiveSessionPage() {
       </section>
     </AcademicShell>
   );
+}
+
+function isReviewOnlySessionStatus(status?: string | null) {
+  return status === "completed" || status === "scoring";
+}
+
+function isPauseableSessionStatus(status?: string | null) {
+  return status === "created" || status === "planned" || status === "in_progress" || status === "paused";
+}
+
+function hasPersistedAgentState(session: SessionDetails) {
+  const state = asRecord(session.state);
+  return Boolean(state && asRecord(state.question_plan));
+}
+
+function inferCurrentPart(session: SessionDetails) {
+  const active = session.parts?.find((item) => item.status === "in_progress" || item.status === "paused");
+  if (active) return active.part;
+  const firstOpen = session.parts?.find((item) => item.status !== "completed");
+  return firstOpen?.part ?? session.target_part ?? null;
+}
+
+function findPendingAnswerTurn(session: SessionDetails, questionText: string) {
+  const turns = [...(session.turns ?? [])].reverse().filter((turn) => turn.speaker === "user" && turn.question_text);
+  const pending = turns.find(isOpenAnswerTurn);
+  if (pending) return pending;
+  if (!questionText) return null;
+  return turns.find((turn) => isOpenAnswerTurn(turn) && normalizeText(turn.question_text) === normalizeText(questionText)) ?? null;
+}
+
+function isOpenAnswerTurn(turn: NonNullable<SessionDetails["turns"]>[number]) {
+  return turn.status !== "completed" && !turn.answer_text;
+}
+
+function currentPartPlanFromState(state: Record<string, unknown>, part: number) {
+  const questionPlan = asRecord(state.question_plan);
+  const parts = Array.isArray(questionPlan?.parts) ? questionPlan.parts : [];
+  return parts.map(asRecord).find((item) => numberFromUnknown(item?.part) === part) ?? null;
+}
+
+function currentPlannedQuestionFromState(state: Record<string, unknown>, session?: SessionDetails) {
+  const part = numberFromUnknown(state.current_part) ?? 1;
+  const partPlan = currentPartPlanFromState(state, part);
+  const questions = Array.isArray(partPlan?.questions) ? partPlan.questions : [];
+  const questionIndex = Math.max(0, numberFromUnknown(state.question_index) ?? 0);
+  const answeredTexts = answeredQuestionTextsFromState(state, part, session);
+  for (let index = questionIndex; index < questions.length; index += 1) {
+    const question = asRecord(questions[index]);
+    const text = typeof question?.text === "string" ? normalizeText(question.text) : "";
+    if (text && !answeredTexts.has(text)) {
+      return question;
+    }
+  }
+  const fallback = asRecord(questions[questionIndex]);
+  const fallbackText = typeof fallback?.text === "string" ? normalizeText(fallback.text) : "";
+  return fallbackText && !answeredTexts.has(fallbackText) ? fallback : null;
+}
+
+function answeredQuestionTextsFromState(state: Record<string, unknown>, part: number, session?: SessionDetails) {
+  const answers = Array.isArray(state.answers) ? state.answers : [];
+  const texts = new Set<string>();
+  for (const rawAnswer of answers) {
+    const answer = asRecord(rawAnswer);
+    if (!answer || numberFromUnknown(answer.part) !== part) continue;
+    const text = typeof answer.question_text === "string" ? normalizeText(answer.question_text) : "";
+    if (text) texts.add(text);
+  }
+  const partById = new Map((session?.parts ?? []).map((item) => [item.id, item.part]));
+  for (const turn of session?.turns ?? []) {
+    if (turn.speaker !== "user" || turn.status !== "completed") continue;
+    const turnPart = (turn.part_id ? partById.get(turn.part_id) : undefined) ?? numberFromUnknown(asRecord(turn.metadata)?.part);
+    if (turnPart && turnPart !== part) continue;
+    const text = typeof turn.question_text === "string" ? normalizeText(turn.question_text) : "";
+    if (text) texts.add(text);
+  }
+  return texts;
+}
+
+function cueCardFromPlannedQuestion(question: Record<string, unknown> | null): CueCard | null {
+  const cue = asRecord(question?.cue_card);
+  if (!cue || typeof cue.prompt !== "string") return null;
+  return {
+    prompt: cue.prompt,
+    bullet_points: stringArrayFromUnknown(cue.bullet_points),
+    preparation_seconds: numberFromUnknown(cue.preparation_seconds) ?? undefined,
+    speaking_seconds: numberFromUnknown(cue.speaking_seconds) ?? undefined,
+  };
+}
+
+function restoredTimerPlanFromSavedState(
+  state: Record<string, unknown>,
+  part: number,
+  question: Record<string, unknown> | null,
+  settings: ExamFlowSettings,
+) {
+  const cueCard = cueCardFromPlannedQuestion(question);
+  const partPlan = currentPartPlanFromState(state, part);
+  return resolveTimerPlan(
+    {
+      part,
+      preparationSeconds: cueCard?.preparation_seconds,
+      speakingSeconds:
+        cueCard?.speaking_seconds ??
+        numberFromUnknown(question?.suggested_seconds) ??
+        numberFromUnknown(partPlan?.suggested_seconds) ??
+        30,
+    },
+    settings,
+  );
+}
+
+function numberArrayFromUnknown(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(numberFromUnknown)
+    .filter((item): item is number => item !== null)
+    .map((item) => Math.trunc(item));
+}
+
+function normalizeText(value?: string | null) {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function formatMode(value?: string) {
@@ -1235,75 +1875,68 @@ function formatTimerSeconds(totalSeconds: number) {
   return `${minutesPart.toString().padStart(2, "0")}:${secondsPart.toString().padStart(2, "0")}`;
 }
 
-function shouldUseWebAsrFallback(err: unknown) {
+function shouldUseBrowserTranscriptFallback(err: unknown) {
   const status = (err as ApiError).response?.status;
-  return status === 415 || status === 502 || status === 503 || status === 504;
+  return status === undefined || status === 415 || status === 422 || status === 502 || status === 503 || status === 504;
 }
 
-function buildWebAsrFallbackTranscript(audioId: string, audioBlob: Blob, durationMs: number, err: unknown): TranscribeAudioResponse {
+function buildBrowserTranscriptFallback(
+  audioId: string,
+  audioBlob: Blob,
+  durationMs: number,
+  browserTranscript?: string,
+  upstreamTranscript?: TranscribeAudioResponse | null,
+  err?: unknown,
+): TranscribeAudioResponse | null {
+  const normalizedBrowserTranscript = normalizeTranscriptText(browserTranscript);
+  if (!normalizedBrowserTranscript) {
+    return null;
+  }
   const status = (err as ApiError).response?.status;
   return {
     audio_asset_id: audioId,
-    asr_text: "I recorded my IELTS speaking answer, but automatic transcription was unavailable during this browser test.",
-    language: "en",
-    confidence: 0.45,
-    provider: "web_asr_fallback",
-    model: "browser-flow-fallback-v1",
+    asr_text: normalizedBrowserTranscript,
+    language: upstreamTranscript?.language || "en",
+    confidence: 0.58,
+    provider: "browser_speech_recognition",
+    model: "web_speech_api",
     duration_ms: durationMs,
     metadata: {
-      fallback: true,
+      browser_fallback: true,
       http_status: status ?? null,
       mime_type: audioBlob.type || "audio/webm",
       size_bytes: audioBlob.size,
+      upstream_provider: upstreamTranscript?.provider ?? null,
+      upstream_model: upstreamTranscript?.model ?? null,
     },
   };
 }
 
-function hasScoreReport(response: AgentResponse) {
-  const state = asRecord(response.state);
-  const report = asRecord(state?.score_report);
-  return Boolean(report && asRecord(report.criteria));
-}
-
-function buildScoreReportPayload(response: AgentResponse): ScoreReportPayload {
-  const state = asRecord(response.state);
-  const report = asRecord(state?.score_report);
-  if (!report) {
-    throw new Error("score_report_missing");
-  }
-  const criteria = asRecord(report.criteria);
-  if (!criteria) {
-    throw new Error("score_report_criteria_missing");
-  }
-  const normalizedCriteria = Object.fromEntries(
-    Object.entries(criteria)
-      .map(([key, value]) => [key, asRecord(value)])
-      .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[1])),
-  );
-  const overallBand = numberFromUnknown(report.overall_band);
-  const confidence = numberFromUnknown(report.confidence);
-  if (overallBand === null || confidence === null) {
-    throw new Error("score_report_band_missing");
-  }
-
-  const rawReport = asRecord(report.raw_report) ?? {};
+function buildUnavailableTranscriptFallback(
+  audioId: string,
+  audioBlob: Blob,
+  durationMs: number,
+  upstreamTranscript?: TranscribeAudioResponse | null,
+  err?: unknown,
+  reason?: string | null,
+): TranscribeAudioResponse {
+  const status = (err as ApiError).response?.status;
   return {
-    report_id: stringOrNull(report.report_id),
-    version: numberFromUnknown(report.version) ?? 1,
-    status: "ready",
-    overall_band: overallBand,
-    confidence,
-    disclaimer: typeof report.disclaimer === "string" ? report.disclaimer : IELTS_DISCLAIMER,
-    model_run_id: stringOrNull(report.model_run_id) ?? response.run_id,
-    criteria: normalizedCriteria,
-    reviewer_notes: stringArrayFromUnknown(report.reviewer_notes),
-    next_practice_plan: recordArrayFromUnknown(report.next_practice_plan),
-    feedback_items: recordArrayFromUnknown(state?.feedback_items),
-    reference_answers: recordArrayFromUnknown(state?.reference_answers),
-    raw_report: {
-      ...rawReport,
-      agent_run_id: response.run_id,
-      feedback_summary: typeof state?.feedback_summary === "string" ? state.feedback_summary : undefined,
+    audio_asset_id: audioId,
+    asr_text: "",
+    language: upstreamTranscript?.language || "en",
+    confidence: null,
+    provider: "transcript_unavailable",
+    model: "empty_transcript",
+    duration_ms: durationMs,
+    metadata: {
+      transcript_unavailable: true,
+      fallback_reason: reason ?? "service_unavailable",
+      http_status: status ?? null,
+      mime_type: audioBlob.type || "audio/webm",
+      size_bytes: audioBlob.size,
+      upstream_provider: upstreamTranscript?.provider ?? null,
+      upstream_model: upstreamTranscript?.model ?? null,
     },
   };
 }
@@ -1356,4 +1989,16 @@ function blobToBase64(blob: Blob) {
     };
     reader.readAsDataURL(blob);
   });
+}
+
+async function queryMicrophonePermissionState() {
+  if (typeof window === "undefined" || !navigator.permissions?.query) {
+    return "unknown";
+  }
+  try {
+    const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
+    return status.state;
+  } catch {
+    return "unknown";
+  }
 }

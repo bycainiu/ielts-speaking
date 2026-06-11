@@ -42,9 +42,9 @@ export function RadarChart({ scores = defaultScores, tone = "dark" }: RadarChart
         <Radar
           name="Score"
           dataKey="A"
-          stroke="#D4AF37"
+          stroke="hsl(var(--academic-accent))"
           strokeWidth={2}
-          fill="#D4AF37"
+          fill="hsl(var(--academic-accent))"
           fillOpacity={0.35}
         />
       </RechartsRadarChart>

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -359,7 +359,7 @@ export default function CalibrationAdminPage() {
         sampleCount: response.data.checks.reduce((total, check) => total + check.sample_count, 0),
         note: response.data.checks.map((check) => check.name).join(", "),
       });
-      setNotice(`${name} completed.`);
+      setNotice("Operation completed.");;
     } catch (err: unknown) {
       setError(apiMessage(err, `${name} could not be completed.`));
     } finally {
@@ -534,7 +534,7 @@ export default function CalibrationAdminPage() {
 
         <div className="grid gap-5">
           <Panel>
-            <SectionHeading icon={BarChart3} label="Calibration Charts" labelZh="图表" />
+            <SectionHeading icon={BarChart3} label="Calibration Charts" labelZh="校准图表" />
             <div className="grid gap-5 lg:grid-cols-2">
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <h3 className="text-sm font-semibold text-slate-900">Criterion MAE</h3>
@@ -586,7 +586,7 @@ export default function CalibrationAdminPage() {
 
         <div className="grid gap-5">
           <Panel>
-            <SectionHeading icon={Sparkles} label="Evaluation Runs" labelZh="评测" />
+            <SectionHeading icon={Sparkles} label="Evaluation Runs" labelZh="评测记录" />
             <div className="grid gap-2">
               <RunButton
                 label="Run Regression"
@@ -650,7 +650,7 @@ export default function CalibrationAdminPage() {
           </Panel>
 
           <Panel>
-            <SectionHeading icon={ShieldCheck} label="Quality Checks" labelZh="门禁" />
+            <SectionHeading icon={ShieldCheck} label="Quality Checks" labelZh="质量门禁" />
             {qualityGate?.checks.length ? (
               <div className="grid gap-2">
                 {qualityGate.checks.map((check) => (

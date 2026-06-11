@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 
+import { waitForAudioTrackReady } from './audioRecorderStart';
+
 type WebAudioWindow = Window & {
   webkitAudioContext?: typeof AudioContext;
 };
@@ -9,6 +11,7 @@ type UseVADOptions = {
   requireSpeechBeforeSilence?: boolean;
   silenceLevelThreshold?: number;
   speechLevelThreshold?: number;
+  allowOwnStream?: boolean;
 };
 
 export function useVAD(
@@ -23,6 +26,7 @@ export function useVAD(
     requireSpeechBeforeSilence = true,
     silenceLevelThreshold = 8,
     speechLevelThreshold = 14,
+    allowOwnStream = true,
   } = options;
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -104,7 +108,12 @@ export function useVAD(
 
   const startVAD = useCallback(async () => {
     try {
+      if (!recordingStream && !allowOwnStream) {
+        return;
+      }
+
       const stream = recordingStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
+      await waitForAudioTrackReady(stream, { timeoutMs: 1500, pollIntervalMs: 50 });
       streamRef.current = stream;
       ownsStreamRef.current = !recordingStream;
 
@@ -138,7 +147,7 @@ export function useVAD(
     } catch (err) {
       console.warn("VAD setup skipped:", err);
     }
-  }, [detectSilence, recordingStream]);
+  }, [allowOwnStream, detectSilence, recordingStream]);
 
   useEffect(() => {
     if (isRecording) {

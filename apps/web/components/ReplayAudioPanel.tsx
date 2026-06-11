@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader2, Pause, Play, RefreshCw, Volume2 } from "lucide-react";
@@ -144,7 +144,7 @@ export function ReplayAudioPanel({ turns, className }: ReplayAudioPanelProps) {
       <section className={cn("rounded-lg border border-slate-200 bg-white p-5 shadow-sm", className)}>
         <div className="flex items-center gap-3 text-slate-600">
           <Volume2 className="h-5 w-5 text-[#3A7CA5]" />
-          <p className="text-sm">No replay audio has been saved for this session yet. 暂无可回放音频。</p>
+          <p className="text-sm">暂无音频可回放。</p>
         </div>
       </section>
     );
@@ -164,7 +164,7 @@ export function ReplayAudioPanel({ turns, className }: ReplayAudioPanelProps) {
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="font-serif text-xl text-[#0B132B]">Session Replay</h2>
-          <p className="text-sm text-slate-600">Review saved examiner audio and user recordings by turn. 按轮次回放录音。</p>
+          <p className="text-sm text-slate-600">保存的录音、考官语音与参考音频会在这里回放。</p>
         </div>
         <Button
           type="button"
@@ -236,7 +236,7 @@ export function ReplayAudioPanel({ turns, className }: ReplayAudioPanelProps) {
                   >
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium">{assetLabel[asset.kind] ?? "Audio"}</span>
-                      <span className="block text-xs text-slate-500">{formatClock(asset.duration_ms)} · {asset.mime_type ?? "audio"}</span>
+                      <span className="block text-xs text-slate-500">{formatClock(asset.duration_ms)} 路 {asset.mime_type ?? "audio"}</span>
                     </span>
                     <span className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[#0B132B]">
                       {isLoading ? (

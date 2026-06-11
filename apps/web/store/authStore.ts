@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+
+import { configureAuthSession, ensureValidAccessToken, handleSessionExpired } from '../lib/authSession';
 import { api } from '../lib/api';
 
 interface User {
@@ -15,9 +17,10 @@ interface AuthState {
   user: User | null;
   accessToken: string | null;
   refreshToken: string | null;
+  tokenExpiresAt: string | null;
   isAuthenticated: boolean;
   hasHydrated: boolean;
-  setTokens: (accessToken: string, refreshToken: string) => void;
+  setTokens: (accessToken: string, refreshToken: string, expiresAt?: string | null) => void;
   setUser: (user: User) => void;
   markHydrated: () => void;
   logout: () => void;
@@ -30,11 +33,12 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       accessToken: null,
       refreshToken: null,
+      tokenExpiresAt: null,
       isAuthenticated: false,
       hasHydrated: false,
 
-      setTokens: (accessToken, refreshToken) => {
-        set({ accessToken, refreshToken, isAuthenticated: true });
+      setTokens: (accessToken, refreshToken, expiresAt = null) => {
+        set({ accessToken, refreshToken, tokenExpiresAt: expiresAt, isAuthenticated: true });
       },
 
       setUser: (user) => {
@@ -46,17 +50,28 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
-        set({ user: null, accessToken: null, refreshToken: null, isAuthenticated: false });
+        set({
+          user: null,
+          accessToken: null,
+          refreshToken: null,
+          tokenExpiresAt: null,
+          isAuthenticated: false,
+        });
       },
 
       fetchUser: async () => {
         try {
-          if (!get().accessToken) return;
+          const token = await ensureValidAccessToken();
+          if (!token) {
+            handleSessionExpired();
+            return;
+          }
+
           const res = await api.get('/me');
           set({ user: res.data.user, isAuthenticated: true });
         } catch (error) {
           console.error("Failed to fetch user", error);
-          get().logout();
+          handleSessionExpired();
         }
       },
     }),
@@ -66,6 +81,7 @@ export const useAuthStore = create<AuthState>()(
         user: state.user,
         accessToken: state.accessToken,
         refreshToken: state.refreshToken,
+        tokenExpiresAt: state.tokenExpiresAt,
         isAuthenticated: Boolean(state.accessToken),
       }),
       onRehydrateStorage: () => (state) => {
@@ -74,3 +90,15 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 );
+
+configureAuthSession({
+  getAccessToken: () => useAuthStore.getState().accessToken,
+  getRefreshToken: () => useAuthStore.getState().refreshToken,
+  getTokenExpiresAt: () => useAuthStore.getState().tokenExpiresAt,
+  setTokens: (accessToken, refreshToken, expiresAt = null) => {
+    useAuthStore.getState().setTokens(accessToken, refreshToken, expiresAt);
+  },
+  logout: () => {
+    useAuthStore.getState().logout();
+  },
+});

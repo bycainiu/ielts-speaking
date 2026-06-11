@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -120,7 +120,7 @@ export default function PromptAdminPage() {
       <PageHeader
         eyebrow="AI Operations"
         title="Prompt Admin"
-        titleZh="提示词版本"
+        titleZh="Prompt 管理"
         description="Version metadata, active prompt catalog, content hashes, and rollback notes."
         actions={
           <Button type="button" variant="soft" onClick={() => router.push("/practice")}>
@@ -176,7 +176,7 @@ export default function PromptAdminPage() {
             Loading prompt versions...
           </div>
         ) : versions.length === 0 ? (
-          <EmptyState icon={Sparkles} title="No prompt versions" body="No prompt versions match the current filters. 当前筛选条件下暂无提示词版本。" />
+          <EmptyState icon={Sparkles} title="No prompt versions" body="暂无 Prompt 版本。" />
         ) : (
           <div className="grid gap-4 lg:grid-cols-2">
             {versions.map((version) => (

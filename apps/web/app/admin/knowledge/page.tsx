@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -305,7 +305,7 @@ export default function KnowledgeAdminPage() {
               Loading documents...
             </div>
           ) : docs.length === 0 ? (
-            <EmptyState icon={Database} title="No knowledge documents" body="No knowledge documents match the current filters. 当前筛选条件下暂无知识库文档。" />
+            <EmptyState icon={Database} title="No knowledge documents" body="暂无知识库文档。" />
           ) : (
             <div className="grid gap-4">
               {docs.map((doc) => (
@@ -321,7 +321,7 @@ export default function KnowledgeAdminPage() {
                       <h2 className="mt-3 break-words text-base font-semibold leading-relaxed text-[#0B132B]">{doc.title}</h2>
                       <p className="mt-2 break-all text-xs text-slate-500">{doc.content_hash}</p>
                       <p className="mt-2 text-sm text-slate-600">
-                        {doc.token_count} tokens · {doc.embedding_model || "no embedding"}
+                        {doc.token_count} tokens 路 {doc.embedding_model || "no embedding"}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2 xl:justify-end">

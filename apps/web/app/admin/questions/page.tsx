@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -328,7 +328,7 @@ export default function QuestionAdminPage() {
         await api.post("/admin/question-bank/questions", item);
       }
       setImportText("");
-      setNotice(`${parsed.length} questions imported.`);
+      setNotice("Operation completed.");;
       reloadQuestions();
     } catch (err: unknown) {
       const apiError = err as ApiError;
@@ -513,7 +513,7 @@ export default function QuestionAdminPage() {
             Loading questions...
           </div>
         ) : questions.length === 0 ? (
-          <EmptyState icon={FilePenLine} title="No questions" body="No questions match the current filters. 当前筛选条件下暂无题目。" />
+          <EmptyState icon={FilePenLine} title="No questions" body="暂无题目。" />
         ) : (
           <div className="grid gap-4">
             {questions.map((question) => (

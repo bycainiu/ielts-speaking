@@ -2,95 +2,38 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import {
-  ArrowLeft,
-  BookOpen,
-  ClipboardList,
-  FileText,
-  History,
-  Loader2,
-  MessageSquare,
-  Send,
-  Target,
-  ThumbsDown,
-  ThumbsUp,
-} from "lucide-react";
+import { ArrowLeft, BrainCircuit, Download, Eye, FileText, History, Lock, RefreshCw, ShieldCheck, type LucideIcon } from "lucide-react";
 
-import { AcademicShell, EmptyState, InlineKpi, PageHeader, Panel, SectionHeading, StatusBadge } from "@/components/academic";
-import { RadarChart } from "@/components/RadarChart";
-import { ReplayAudioPanel, type ReplayTurn } from "@/components/ReplayAudioPanel";
+import { AcademicShell, DetailDialog, EmptyState, InlineKpi, PageHeader, Panel, SectionHeading, StatusBadge } from "@/components/academic";
+import { AgentTracePanel } from "@/components/review/AgentTracePanel";
+import { ConversationReplay } from "@/components/review/ConversationReplay";
+import { CriterionEvidenceCards } from "@/components/review/CriterionEvidenceCards";
+import { ReferenceAnswerDock } from "@/components/review/ReferenceAnswerDock";
+import { ReviewTimeline } from "@/components/review/ReviewTimeline";
+import {
+  type AgentRunTrace,
+  type ReportEvidence,
+  type ReviewConversationItem,
+  type ReviewSessionPart,
+  type ReviewTurn,
+  type ScoreReport,
+} from "@/components/review/types";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { agentApi, api } from "@/lib/api";
+import { selectReviewTranscript } from "@/lib/transcriptUtils";
 import { useAuthStore } from "@/store/authStore";
 
 type SessionResponse = {
   session: {
     id: string;
+    user_id?: string;
     mode: string;
     status: string;
-    turns: ReplayTurn[];
+    parts?: ReviewSessionPart[];
+    turns?: ReviewTurn[];
+    created_at?: string;
+    completed_at?: string | null;
   };
-};
-
-type CriterionName =
-  | "fluency_coherence"
-  | "lexical_resource"
-  | "grammatical_range_accuracy"
-  | "pronunciation";
-
-type ReportEvidence = {
-  turn_id?: string;
-  quote?: string;
-  reason?: string;
-};
-
-type CriterionScore = {
-  id?: string;
-  criterion: CriterionName | string;
-  band: number;
-  confidence: number;
-  evidence?: ReportEvidence[];
-  suggestions?: string[];
-};
-
-type FeedbackItem = {
-  id: string;
-  category: string;
-  priority: number;
-  title: string;
-  body: string;
-  evidence_refs?: ReportEvidence[];
-};
-
-type ReferenceAnswer = {
-  id: string;
-  turn_id?: string | null;
-  band_target?: number | null;
-  skeleton?: Record<string, string>;
-  answer_text: string;
-  personalization_notes?: string | null;
-};
-
-type StudyPlan = {
-  id: string;
-  priority: number;
-  focus: string;
-  task: string;
-  due_on?: string | null;
-};
-
-type ScoreReport = {
-  id: string;
-  session_id: string;
-  version: number;
-  status: string;
-  overall_band?: number | null;
-  confidence?: number | null;
-  disclaimer: string;
-  criteria: CriterionScore[];
-  feedback_items: FeedbackItem[];
-  reference_answers: ReferenceAnswer[];
-  study_plans: StudyPlan[];
 };
 
 type ReportResponse = {
@@ -105,63 +48,68 @@ type ApiError = {
   };
 };
 
-type FeedbackTargetType = "overall" | "score" | "feedback" | "reference_answer";
-type FeedbackVote = "up" | "down";
-
-type FeedbackFormState = {
-  vote?: FeedbackVote;
-  comment: string;
-  saving: boolean;
-  notice?: string;
-  error?: string;
-};
-
-const criterionLabels: Record<string, string> = {
-  fluency_coherence: "Fluency",
-  lexical_resource: "Lexical",
-  grammatical_range_accuracy: "Grammar",
-  pronunciation: "Pronunciation",
-};
-
 export default function ReportPage() {
   const params = useParams();
   const router = useRouter();
-  const user = useAuthStore((state) => state.user);
   const sessionId = params.sessionId as string;
+  const { user, isAuthenticated, hasHydrated, fetchUser } = useAuthStore();
+  const canAdmin = user?.role === "operator" || user?.role === "admin";
+
   const [session, setSession] = useState<SessionResponse["session"] | null>(null);
   const [report, setReport] = useState<ScoreReport | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reportNotice, setReportNotice] = useState<string | null>(null);
-  const [feedbackForms, setFeedbackForms] = useState<Record<string, FeedbackFormState>>({});
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  const [tracesByRunId, setTracesByRunId] = useState<Record<string, AgentRunTrace>>({});
+  const [traceDialogOpen, setTraceDialogOpen] = useState(false);
 
   useEffect(() => {
+    if (hasHydrated && !isAuthenticated) {
+      router.push("/login");
+    }
+  }, [hasHydrated, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (hasHydrated && isAuthenticated && !user) {
+      fetchUser();
+    }
+  }, [fetchUser, hasHydrated, isAuthenticated, user]);
+
+  useEffect(() => {
+    if (!hasHydrated || !isAuthenticated || !user) return;
     let cancelled = false;
 
-    async function loadReportPage() {
+    async function loadReview() {
       setLoading(true);
-      setError(null);
-      setReportNotice(null);
+      setError("");
+      setNotice("");
       try {
-        const sessionResponse = await api.get<SessionResponse>(`/sessions/${sessionId}`);
+        const sessionPath = canAdmin ? `/admin/sessions/${sessionId}` : `/sessions/${sessionId}`;
+        const reportPath = canAdmin ? `/admin/sessions/${sessionId}/report` : `/sessions/${sessionId}/report`;
+        const sessionResponse = await api.get<SessionResponse>(sessionPath);
         if (!cancelled) {
           setSession(sessionResponse.data.session);
         }
 
         try {
-          const reportResponse = await api.get<ReportResponse>(`/sessions/${sessionId}/report`);
+          const reportResponse = await api.get<ReportResponse>(reportPath);
           if (!cancelled) {
             setReport(reportResponse.data.report);
           }
         } catch {
           if (!cancelled) {
             setReport(null);
-            setReportNotice("Score report is not ready yet. 评分报告尚未生成，仍可查看回放和转写。");
+            setNotice("评分报告尚未生成，仍可查看已保存的问答、转写和音频。");
           }
         }
-      } catch {
+      } catch (err: unknown) {
+        const apiError = err as ApiError;
         if (!cancelled) {
-          setError("Session report could not be loaded. 会话复盘加载失败。");
+          setError(apiError.response?.data?.message || "会话复盘加载失败。");
+          setSession(null);
+          setReport(null);
         }
       } finally {
         if (!cancelled) {
@@ -170,488 +118,314 @@ export default function ReportPage() {
       }
     }
 
-    loadReportPage();
+    loadReview();
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [canAdmin, hasHydrated, isAuthenticated, sessionId, user]);
 
-  const turnById = useMemo(() => {
-    const items = new Map<string, ReplayTurn>();
-    for (const turn of session?.turns ?? []) {
-      items.set(turn.id, turn);
+  const conversationItems = useMemo(() => buildConversationItems(session, report), [session, report]);
+  const selectedItem = conversationItems.find((item) => item.id === selectedTurnId) ?? conversationItems[0];
+  const runIds = useMemo(() => collectRunIds(conversationItems, report), [conversationItems, report]);
+
+  useEffect(() => {
+    if (!selectedTurnId && conversationItems[0]) {
+      setSelectedTurnId(conversationItems[0].id);
     }
-    return items;
-  }, [session?.turns]);
+  }, [conversationItems, selectedTurnId]);
 
-  const radarScores = useMemo(
-    () =>
-      (report?.criteria ?? []).map((item) => ({
-        subject: criterionLabels[item.criterion] ?? item.criterion,
-        score: item.band,
-      })),
-    [report?.criteria],
-  );
-
-  const feedbackKey = (targetType: FeedbackTargetType, targetId?: string | null) =>
-    `${targetType}:${targetId ?? "overall"}`;
-
-  const feedbackForm = (targetType: FeedbackTargetType, targetId?: string | null): FeedbackFormState =>
-    feedbackForms[feedbackKey(targetType, targetId)] ?? { comment: "", saving: false };
-
-  const updateFeedbackForm = (
-    targetType: FeedbackTargetType,
-    targetId: string | null,
-    patch: Partial<FeedbackFormState>,
-  ) => {
-    const key = feedbackKey(targetType, targetId);
-    setFeedbackForms((current) => ({
-      ...current,
-      [key]: {
-        ...(current[key] ?? { comment: "", saving: false }),
-        ...patch,
-      },
-    }));
-  };
-
-  const submitReportFeedback = async (targetType: FeedbackTargetType, targetId?: string | null, vote?: FeedbackVote) => {
-    if (!report) return;
-    const key = feedbackKey(targetType, targetId);
-    const current = feedbackForms[key] ?? { comment: "", saving: false };
-    const selectedVote = vote ?? current.vote;
-    if (!selectedVote) {
-      updateFeedbackForm(targetType, targetId ?? null, { error: "Choose a vote first. 请先选择反馈方向。", notice: undefined });
+  useEffect(() => {
+    if (!canAdmin || runIds.length === 0) {
+      setTracesByRunId({});
       return;
     }
+    let cancelled = false;
 
-    updateFeedbackForm(targetType, targetId ?? null, {
-      vote: selectedVote,
-      saving: true,
-      error: undefined,
-      notice: undefined,
-    });
-    try {
-      const payload: Record<string, unknown> = {
-        target_type: targetType,
-        vote: selectedVote,
-        comment: current.comment.trim() || undefined,
-        metadata: {
-          session_id: sessionId,
-          surface: "report_page",
-        },
-      };
-      if (targetType !== "overall" && targetId) {
-        payload.target_id = targetId;
+    async function loadTraces() {
+      setTraceLoading(true);
+      const next: Record<string, AgentRunTrace> = {};
+      await Promise.allSettled(
+        runIds.map(async (runId) => {
+          const response = await agentApi.get<AgentRunTrace>(`/agent/runs/${encodeURIComponent(runId)}/trace`);
+          next[runId] = response.data;
+        }),
+      );
+      if (!cancelled) {
+        setTracesByRunId(next);
+        setTraceLoading(false);
       }
-      await api.post(`/reports/${report.id}/feedback`, payload);
-      updateFeedbackForm(targetType, targetId ?? null, {
-        saving: false,
-        vote: selectedVote,
-        notice: "Feedback saved. 反馈已保存。",
-        error: undefined,
-      });
-    } catch (err: unknown) {
-      const apiError = err as ApiError;
-      updateFeedbackForm(targetType, targetId ?? null, {
-        saving: false,
-        error: apiError.response?.data?.message || "Feedback could not be saved. 反馈保存失败。",
-        notice: undefined,
-      });
     }
-  };
+
+    loadTraces();
+    return () => {
+      cancelled = true;
+    };
+  }, [canAdmin, runIds]);
+
+  const selectedTrace = selectedItem?.agentRunId ? tracesByRunId[selectedItem.agentRunId] : undefined;
+  const traceCoverage = runIds.length ? Object.keys(tracesByRunId).length / runIds.length : 0;
+
+  if (!hasHydrated || !isAuthenticated || (isAuthenticated && !user)) return null;
 
   return (
-    <AcademicShell activePath="/history" userName={user?.display_name} userRole={user?.role}>
+    <AcademicShell activePath="/history" userName={user?.display_name || user?.email} userRole={user?.role} wide>
       <PageHeader
-        eyebrow="Session Report"
-        title="Score Review"
-        titleZh="会话复盘"
-        description="Review simulated IELTS criteria, evidence, feedback, reference answers, and replay audio."
+        eyebrow="Session Review"
+        title="Session Review"
+        titleZh="增强复盘"
+        description="对照每一轮考试问答、原音频、语音指标、评分证据和背后的 Agent/工具调用轨迹。"
         actions={
           <>
             <Button type="button" variant="soft" onClick={() => router.push("/history")}>
               <History className="mr-2 h-4 w-4" />
-              History / 历史
+              History
             </Button>
             <Button type="button" variant="soft" onClick={() => router.push("/practice")}>
               <ArrowLeft className="mr-2 h-4 w-4" />
-              Practice / 练习
+              Practice
+            </Button>
+            <Button type="button" variant="soft" onClick={() => window.print()}>
+              <Download className="mr-2 h-4 w-4" />
+              Export
             </Button>
           </>
         }
       />
 
+      <div className="flex flex-wrap gap-2">
+        <KpiChip icon={FileText} label={session?.mode || "full_exam"} />
+        <KpiChip label="Overall Band" value={formatBand(report?.overall_band)} tone="gold" />
+        <KpiChip label="Confidence" value={formatPercent(report?.confidence)} tone="teal" />
+        <KpiChip label="Turns" value={String(conversationItems.length)} />
+        <KpiChip label="Trace complete" value={canAdmin ? `${Math.round(traceCoverage * 100)}%` : "Redacted"} tone="sage" />
+        <KpiChip label="Report version" value={report?.version ? String(report.version) : "-"} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <StatusBadge tone="gold">Learner view</StatusBadge>
+        <StatusBadge tone={canAdmin ? "teal" : "slate"}>
+          <Lock className="mr-1 h-3.5 w-3.5" />
+          Admin trace {canAdmin ? "enabled" : "locked"}
+        </StatusBadge>
+        <StatusBadge tone="blue">
+          <ShieldCheck className="mr-1 h-3.5 w-3.5" />
+          Redacted trace enabled
+        </StatusBadge>
+      </div>
+
       {loading && (
         <Panel className="flex min-h-64 items-center justify-center">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin text-[#D4AF37]" />
-          <span className="text-sm text-slate-600">Loading report / 正在加载复盘</span>
+          <RefreshCw className="mr-2 h-5 w-5 animate-spin text-academic-score" />
+          <span className="text-sm text-slate-600">正在加载增强复盘...</span>
         </Panel>
       )}
 
       {error && !loading && <Panel className="border-red-200 bg-red-50 text-sm text-red-700">{error}</Panel>}
+      {notice && !loading && <Panel className="border-academic-score/30 bg-academic-score-soft text-sm text-amber-800">{notice}</Panel>}
 
       {session && !loading && (
         <>
-          {reportNotice && <Panel className="border-[#D4AF37]/30 bg-[#FFF8DF] text-sm text-[#8A6F1D]">{reportNotice}</Panel>}
-
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
-            <Panel>
-              <div className="mb-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-                <div className="min-w-0">
-                  <SectionHeading icon={Target} label="Score Overview" labelZh="评分概览" />
-                  <h2 className="font-serif text-5xl text-[#0B132B]">
-                    {formatBand(report?.overall_band)}
-                    <span className="ml-3 align-middle text-base font-sans font-medium text-slate-500">Overall Band</span>
-                  </h2>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <StatusBadge tone="teal">Confidence {formatPercent(report?.confidence)}</StatusBadge>
-                    <StatusBadge tone="slate">Version {report?.version ?? "-"}</StatusBadge>
-                    <StatusBadge tone="gold">{session.mode}</StatusBadge>
-                  </div>
-                </div>
-                <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50">
-                  <RadarChart scores={radarScores.length ? radarScores : undefined} tone="light" />
-                </div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                {(report?.criteria ?? []).map((criterion) => (
-                  <article key={criterion.criterion} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h3 className="break-words text-sm font-semibold text-[#0B132B]">
-                          {criterionLabels[criterion.criterion] ?? criterion.criterion}
-                        </h3>
-                        <p className="mt-1 text-xs text-slate-500">Confidence {formatPercent(criterion.confidence)}</p>
-                      </div>
-                      <StatusBadge tone="gold" className="text-sm">
-                        {formatBand(criterion.band)}
-                      </StatusBadge>
-                    </div>
-                    <EvidenceList evidence={criterion.evidence ?? []} turnById={turnById} />
-                    <SuggestionList suggestions={criterion.suggestions ?? []} />
-                    {criterion.id && (
-                      <InlineFeedbackControls
-                        state={feedbackForm("score", criterion.id)}
-                        onVote={(vote) => submitReportFeedback("score", criterion.id, vote)}
-                      />
-                    )}
-                  </article>
-                ))}
-              </div>
-
-              {!report && (
-                <EmptyState
-                  icon={FileText}
-                  title="No persisted score report"
-                  body="No persisted score report has been saved for this session yet. 评分完成后这里会显示四维证据。"
-                />
-              )}
-            </Panel>
-
-            <aside className="flex flex-col gap-5">
-              <SummaryPanel session={session} report={report} />
-              {report && (
-                <ReportFeedbackPanel
-                  state={feedbackForm("overall")}
-                  onVote={(vote) => updateFeedbackForm("overall", null, { vote, error: undefined, notice: undefined })}
-                  onCommentChange={(comment) => updateFeedbackForm("overall", null, { comment, error: undefined, notice: undefined })}
-                  onSubmit={() => submitReportFeedback("overall")}
-                />
-              )}
-              <FeedbackPanel
-                feedbackItems={report?.feedback_items ?? []}
-                feedbackState={(targetId) => feedbackForm("feedback", targetId)}
-                onVote={(targetId, vote) => submitReportFeedback("feedback", targetId, vote)}
+          {conversationItems.length === 0 ? (
+            <EmptyState icon={FileText} title="暂无会话轮次" body="这次考试还没有保存任何问答轮次。" />
+          ) : (
+            <section className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_320px]">
+              <ReviewTimeline items={conversationItems} selectedId={selectedItem?.id} report={report} onSelect={setSelectedTurnId} />
+              <ConversationReplay items={conversationItems} selectedId={selectedItem?.id} onSelect={setSelectedTurnId} />
+              <TraceSummaryPanel
+                item={selectedItem}
+                trace={selectedTrace}
+                canAdmin={canAdmin}
+                loading={traceLoading}
+                onOpen={() => setTraceDialogOpen(true)}
               />
-              <StudyPlanPanel studyPlans={report?.study_plans ?? []} />
-            </aside>
-          </div>
+            </section>
+          )}
 
-          <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
-            <ReplayAudioPanel turns={session.turns ?? []} />
-            <ReferenceAnswerPanel
-              referenceAnswers={report?.reference_answers ?? []}
-              turnById={turnById}
-              feedbackState={(targetId) => feedbackForm("reference_answer", targetId)}
-              onVote={(targetId, vote) => submitReportFeedback("reference_answer", targetId, vote)}
-            />
-          </section>
+          {report?.criteria?.length ? (
+            <CriterionEvidenceCards criteria={report.criteria} items={conversationItems} />
+          ) : (
+            <Panel>
+              <EmptyState icon={FileText} title="暂无评分维度" body="报告生成后会显示 Fluency、Lexical、Grammar、Pronunciation 四维证据。" />
+            </Panel>
+          )}
+
+          <ReferenceAnswerDock referenceAnswers={report?.reference_answers ?? []} selectedItem={selectedItem} />
 
           <p className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs leading-relaxed text-slate-500">
             {report?.disclaimer ?? "AI scoring is for practice reference only, not official IELTS results."}
           </p>
+
+          <DetailDialog
+            open={traceDialogOpen}
+            title="Agent Trace"
+            titleZh="调用详情"
+            description={selectedItem?.agentRunId ? `Turn ${(selectedItem.turnIndex ?? 0) + 1} · Run ${selectedItem.agentRunId}` : "当前轮次没有可关联的 Agent run。"}
+            onClose={() => setTraceDialogOpen(false)}
+            className="max-w-6xl"
+          >
+            <AgentTracePanel item={selectedItem} trace={selectedTrace} canAdmin={canAdmin} loading={traceLoading} />
+          </DetailDialog>
         </>
       )}
     </AcademicShell>
   );
 }
 
-function SummaryPanel({ session, report }: { session: SessionResponse["session"]; report: ScoreReport | null }) {
+function TraceSummaryPanel({
+  item,
+  trace,
+  canAdmin,
+  loading,
+  onOpen,
+}: {
+  item?: ReviewConversationItem;
+  trace?: AgentRunTrace | null;
+  canAdmin: boolean;
+  loading: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <Panel>
-      <SectionHeading icon={FileText} label="Summary" labelZh="摘要" />
+    <Panel className="h-fit lg:sticky lg:top-4">
+      <SectionHeading
+        icon={BrainCircuit}
+        label="Trace Summary"
+        labelZh="后台轨迹"
+        action={<StatusBadge tone={canAdmin ? "teal" : "slate"}>{canAdmin ? "Admin" : "Redacted"}</StatusBadge>}
+      />
       <div className="grid gap-3">
-        <InlineKpi label="Mode / 模式" value={session.mode} />
-        <InlineKpi label="Session / 会话" value={session.status} />
-        <InlineKpi label="Report / 报告" value={report?.status ?? "not ready"} />
-        <InlineKpi label="Turns / 轮次" value={String(session.turns?.length ?? 0)} />
-      </div>
-    </Panel>
-  );
-}
-
-function ReportFeedbackPanel({
-  state,
-  onVote,
-  onCommentChange,
-  onSubmit,
-}: {
-  state: FeedbackFormState;
-  onVote: (vote: FeedbackVote) => void;
-  onCommentChange: (comment: string) => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <Panel tone="paper">
-      <SectionHeading icon={MessageSquare} label="Report Feedback" labelZh="报告反馈" />
-      <div className="flex gap-2">
-        <VoteButton vote="up" active={state.vote === "up"} disabled={state.saving} onClick={() => onVote("up")} />
-        <VoteButton vote="down" active={state.vote === "down"} disabled={state.saving} onClick={() => onVote("down")} />
-      </div>
-      <label className="mt-4 grid gap-2 text-sm text-slate-700">
-        <span className="font-medium">Comment / 备注</span>
-        <textarea
-          value={state.comment}
-          onChange={(event) => onCommentChange(event.target.value)}
-          rows={3}
-          maxLength={2000}
-          className="min-h-24 resize-y rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-[#D4AF37] focus:ring-2 focus:ring-[#D4AF37]/20"
-          placeholder="What helped or missed the mark"
-        />
-      </label>
-      <Button type="button" variant="gold" onClick={onSubmit} disabled={state.saving} className="mt-4 w-full">
-        {state.saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
-        Send / 发送
-      </Button>
-      {state.notice && <p className="mt-3 text-xs text-[#3E7056]">{state.notice}</p>}
-      {state.error && <p className="mt-3 text-xs text-red-700">{state.error}</p>}
-    </Panel>
-  );
-}
-
-function FeedbackPanel({
-  feedbackItems,
-  feedbackState,
-  onVote,
-}: {
-  feedbackItems: FeedbackItem[];
-  feedbackState: (targetId: string) => FeedbackFormState;
-  onVote: (targetId: string, vote: FeedbackVote) => void;
-}) {
-  return (
-    <Panel>
-      <SectionHeading icon={MessageSquare} label="Feedback" labelZh="改进建议" />
-      <div className="space-y-3">
-        {feedbackItems.length === 0 && (
-          <EmptyState
-            icon={MessageSquare}
-            title="No feedback yet"
-            body="Feedback items will appear after scoring is saved. 评分保存后会显示建议。"
-          />
-        )}
-        {feedbackItems.map((item) => (
-          <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <h3 className="break-words text-sm font-semibold text-[#0B132B]">{item.title}</h3>
-              <StatusBadge tone="coral">P{item.priority}</StatusBadge>
-            </div>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600">{item.body}</p>
-            <InlineFeedbackControls state={feedbackState(item.id)} onVote={(vote) => onVote(item.id, vote)} />
-          </article>
-        ))}
-      </div>
-    </Panel>
-  );
-}
-
-function StudyPlanPanel({ studyPlans }: { studyPlans: StudyPlan[] }) {
-  return (
-    <Panel>
-      <SectionHeading icon={ClipboardList} label="Next Practice" labelZh="下一步训练" />
-      <div className="space-y-3">
-        {studyPlans.length === 0 && (
-          <EmptyState
-            icon={ClipboardList}
-            title="No practice tasks"
-            body="Practice tasks will appear after feedback is generated. 训练任务会在反馈生成后出现。"
-          />
-        )}
-        {studyPlans.map((item) => (
-          <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <h3 className="break-words text-sm font-semibold text-[#0B132B]">{item.focus}</h3>
-              <StatusBadge tone="gold">P{item.priority}</StatusBadge>
-            </div>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600">{item.task}</p>
-            {item.due_on && <p className="mt-2 text-xs text-slate-500">Due {item.due_on}</p>}
-          </article>
-        ))}
-      </div>
-    </Panel>
-  );
-}
-
-function ReferenceAnswerPanel({
-  referenceAnswers,
-  turnById,
-  feedbackState,
-  onVote,
-}: {
-  referenceAnswers: ReferenceAnswer[];
-  turnById: Map<string, ReplayTurn>;
-  feedbackState: (targetId: string) => FeedbackFormState;
-  onVote: (targetId: string, vote: FeedbackVote) => void;
-}) {
-  return (
-    <Panel>
-      <SectionHeading icon={BookOpen} label="Reference Answer" labelZh="参考答案" />
-      <div className="space-y-4">
-        {referenceAnswers.length === 0 && (
-          <EmptyState
-            icon={BookOpen}
-            title="No reference answers"
-            body="Reference answers will appear after feedback is saved. 参考答案会在反馈生成后显示。"
-          />
-        )}
-        {referenceAnswers.map((item) => {
-          const turn = item.turn_id ? turnById.get(item.turn_id) : undefined;
-          return (
-            <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <StatusBadge tone="gold">Target {formatBand(item.band_target)}</StatusBadge>
-                {turn && <span className="text-xs text-slate-500">Turn {turn.turn_index + 1}</span>}
-              </div>
-              <SkeletonList skeleton={item.skeleton ?? {}} />
-              <p className="mt-3 text-sm leading-relaxed text-slate-700">{item.answer_text}</p>
-              {item.personalization_notes && (
-                <p className="mt-3 border-t border-slate-200 pt-3 text-xs leading-relaxed text-slate-500">
-                  {item.personalization_notes}
-                </p>
-              )}
-              <InlineFeedbackControls state={feedbackState(item.id)} onVote={(vote) => onVote(item.id, vote)} />
-            </article>
-          );
-        })}
-      </div>
-    </Panel>
-  );
-}
-
-function InlineFeedbackControls({
-  state,
-  onVote,
-}: {
-  state: FeedbackFormState;
-  onVote: (vote: FeedbackVote) => void;
-}) {
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3">
-      <VoteButton vote="up" active={state.vote === "up"} disabled={state.saving} compact onClick={() => onVote("up")} />
-      <VoteButton vote="down" active={state.vote === "down"} disabled={state.saving} compact onClick={() => onVote("down")} />
-      {state.saving && <Loader2 className="h-4 w-4 animate-spin text-[#D4AF37]" />}
-      {state.notice && <span className="text-xs text-[#3E7056]">{state.notice}</span>}
-      {state.error && <span className="text-xs text-red-700">{state.error}</span>}
-    </div>
-  );
-}
-
-function VoteButton({
-  vote,
-  active,
-  disabled,
-  compact = false,
-  onClick,
-}: {
-  vote: FeedbackVote;
-  active: boolean;
-  disabled?: boolean;
-  compact?: boolean;
-  onClick: () => void;
-}) {
-  const Icon = vote === "up" ? ThumbsUp : ThumbsDown;
-  const label = vote === "up" ? "Useful" : "Not useful";
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={[
-        "inline-flex h-9 cursor-pointer items-center justify-center rounded-md border text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-        compact ? "w-9" : "min-w-24 gap-2 px-3",
-        active
-          ? "border-[#D4AF37]/60 bg-[#D4AF37]/15 text-[#8A6F1D]"
-          : "border-slate-200 bg-white text-slate-600 hover:border-[#D4AF37]/50 hover:bg-[#F7F4EA] hover:text-[#0B132B]",
-      ].join(" ")}
-    >
-      <Icon className="h-4 w-4" />
-      {!compact && <span>{label}</span>}
-    </button>
-  );
-}
-
-function EvidenceList({ evidence, turnById }: { evidence: ReportEvidence[]; turnById: Map<string, ReplayTurn> }) {
-  if (evidence.length === 0) return null;
-  return (
-    <div className="mt-4 space-y-3">
-      {evidence.slice(0, 2).map((item, index) => {
-        const turn = item.turn_id ? turnById.get(item.turn_id) : undefined;
-        const transcript = turn?.answer_text || turn?.question_text;
-        return (
-          <div key={`${item.turn_id ?? "evidence"}-${index}`} className="rounded-md border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-semibold uppercase text-[#3A7CA5]">Evidence</p>
-            {item.quote && <blockquote className="mt-1 text-sm leading-relaxed text-slate-700">{item.quote}</blockquote>}
-            {item.reason && <p className="mt-2 text-xs leading-relaxed text-slate-500">{item.reason}</p>}
-            {transcript && (
-              <p className="mt-2 border-t border-slate-200 pt-2 text-xs leading-relaxed text-slate-500">
-                Original: {transcript}
-              </p>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function SuggestionList({ suggestions }: { suggestions: string[] }) {
-  if (suggestions.length === 0) return null;
-  return (
-    <ul className="mt-4 space-y-2">
-      {suggestions.slice(0, 2).map((item) => (
-        <li key={item} className="rounded-md bg-[#FFF8DF] px-3 py-2 text-sm leading-relaxed text-slate-700">
-          {item}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function SkeletonList({ skeleton }: { skeleton: Record<string, string> }) {
-  const items = Object.entries(skeleton);
-  if (items.length === 0) return null;
-  return (
-    <dl className="grid gap-2">
-      {items.map(([key, value]) => (
-        <div key={key} className="rounded-md border border-slate-200 bg-white px-3 py-2">
-          <dt className="text-xs uppercase text-slate-500">{key.replaceAll("_", " ")}</dt>
-          <dd className="text-sm text-slate-700">{value}</dd>
+        <InlineKpi label="Turn" value={item ? `Part ${item.part} · Turn ${item.turnIndex + 1}` : "-"} />
+        <InlineKpi label="Run" value={item?.agentRunId || "未关联"} />
+        <InlineKpi label="Steps" value={trace ? String(trace.steps.length) : loading ? "加载中" : "不可用"} />
+        <InlineKpi label="Status" value={trace?.status || (loading ? "loading" : "no trace")} />
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-6 text-slate-600">
+          完整 Agent step、真实 LLM 请求、工具参数和脱敏 payload 已移入详情窗口，主页面只保留当前轮次定位信息。
         </div>
-      ))}
-    </dl>
+        <Button type="button" variant="teal" onClick={onOpen} disabled={loading && !trace}>
+          <Eye className="mr-2 h-4 w-4" />
+          打开详情
+        </Button>
+      </div>
+    </Panel>
   );
+}
+
+function KpiChip({
+  icon: Icon,
+  label,
+  value,
+  tone = "slate",
+}: {
+  icon?: LucideIcon;
+  label: string;
+  value?: string;
+  tone?: "gold" | "teal" | "sage" | "slate";
+}) {
+  const tones = {
+    gold: "border-academic-score/30 bg-academic-score-soft text-amber-800",
+    teal: "border-academic-accent/25 bg-academic-accent-soft text-blue-800",
+    sage: "border-emerald-600/25 bg-academic-success-soft text-emerald-800",
+    slate: "border-slate-200 bg-white text-slate-600",
+  };
+  return (
+    <div className={`inline-flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm shadow-sm ${tones[tone]}`}>
+      {Icon && <Icon className="h-4 w-4" />}
+      <span>{label}</span>
+      {value && <span className="font-semibold text-academic-navy">{value}</span>}
+    </div>
+  );
+}
+
+function buildConversationItems(session: SessionResponse["session"] | null, report: ScoreReport | null): ReviewConversationItem[] {
+  if (!session?.turns?.length) return [];
+  const partById = new Map((session.parts ?? []).map((part) => [part.id, part.part]));
+  const evidenceByTurn = evidenceByTurnId(report);
+  const referenceByTurn = new Map((report?.reference_answers ?? []).filter((item) => item.turn_id).map((item) => [item.turn_id as string, item]));
+
+  return [...session.turns]
+    .sort((a, b) => a.turn_index - b.turn_index)
+    .filter((turn) => turn.question_text || turn.answer_text || (turn.audio_assets?.length ?? 0) > 0)
+    .map((turn) => {
+      const latestAsr = latestItem(turn.asr_results);
+      const latestMetrics = latestItem(turn.speech_metrics);
+      const part = partById.get(turn.part_id ?? "") ?? numberFromMetadata(turn.metadata, "part") ?? inferPart(turn.turn_index);
+      const questionId = turn.question_id || stringFromMetadata(turn.metadata, "agent_question_id") || stringFromMetadata(turn.metadata, "question_id");
+      const agentRunId = turn.agent_run_id || stringFromMetadata(turn.metadata, "agent_run_id");
+      const answerText = selectReviewTranscript({
+        correctedTranscript: latestAsr?.corrected_transcript,
+        answerText: turn.answer_text,
+        asrTranscript: latestAsr?.transcript,
+        asrProvider: latestAsr?.provider,
+      });
+      return {
+        id: turn.id,
+        turnIndex: turn.turn_index,
+        part,
+        questionId,
+        questionText: turn.question_text,
+        answerText,
+        agentRunId,
+        metadata: turn.metadata,
+        examinerAudio: firstAsset(turn, "examiner_tts"),
+        userAudio: firstAsset(turn, "user_recording"),
+        asr: latestAsr,
+        metrics: latestMetrics,
+        evidence: evidenceByTurn.get(turn.id) ?? [],
+        referenceAnswer: referenceByTurn.get(turn.id),
+        status: turn.status,
+      };
+    });
+}
+
+function evidenceByTurnId(report: ScoreReport | null) {
+  const grouped = new Map<string, Array<ReportEvidence & { criterion: string }>>();
+  for (const criterion of report?.criteria ?? []) {
+    for (const item of criterion.evidence ?? []) {
+      if (!item.turn_id) continue;
+      grouped.set(item.turn_id, [...(grouped.get(item.turn_id) ?? []), { ...item, criterion: criterion.criterion }]);
+    }
+  }
+  return grouped;
+}
+
+function firstAsset(turn: ReviewTurn, kind: string) {
+  return (turn.audio_assets ?? []).find((asset) => asset.kind === kind);
+}
+
+function latestItem<T extends { created_at?: string }>(items?: T[]) {
+  if (!items?.length) return undefined;
+  return [...items].sort((a, b) => Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""))[0];
+}
+
+function collectRunIds(items: ReviewConversationItem[], report: ScoreReport | null) {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.agentRunId) ids.add(item.agentRunId);
+  }
+  if (report?.model_run_id) ids.add(report.model_run_id);
+  const rawRunId = typeof report?.raw_report?.agent_run_id === "string" ? report.raw_report.agent_run_id : undefined;
+  if (rawRunId) ids.add(rawRunId);
+  return Array.from(ids);
+}
+
+function numberFromMetadata(metadata: Record<string, unknown> | null | undefined, key: string) {
+  const value = metadata?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function stringFromMetadata(metadata: Record<string, unknown> | null | undefined, key: string) {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function inferPart(turnIndex: number) {
+  if (turnIndex <= 1) return 1;
+  if (turnIndex === 2) return 2;
+  return 3;
 }
 
 function formatBand(value?: number | null) {

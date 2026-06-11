@@ -1,6 +1,6 @@
 # Web App
 
-Next.js + React + TypeScript 前端。当前版本是 IELTS Speaking Live 控制台骨架，后续接入 WebSocket、录音、ASR/TTS、Avatar 和复盘报告。
+Next.js + React + TypeScript 前端应用，承载 IELTS Speaking Agent Studio 的学习者工作台、完整模考配置、Live 会话、复盘报告、订阅管理与运营后台。
 
 ## 本地运行
 
@@ -17,4 +17,3 @@ pnpm lint
 pnpm typecheck
 pnpm build
 ```
-

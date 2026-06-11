@@ -1,5 +1,6 @@
-import axios from 'axios';
-import { useAuthStore } from '../store/authStore';
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+
+import { ensureValidAccessToken, handleUnauthorizedResponse } from './authSession';
 
 export const api = axios.create({
   baseURL: '/api',
@@ -13,6 +14,11 @@ export const authApi = axios.create({
 
 export const agentApi = axios.create({
   baseURL: '/api/agent-harness',
+  timeout: 30000,
+});
+
+export const orchestratorApi = axios.create({
+  baseURL: '/api/agent-orchestrator',
   timeout: 30000,
 });
 
@@ -34,93 +40,78 @@ const isAuthEndpoint = (url?: string) => {
   return AUTH_ENDPOINTS.some((endpoint) => path === endpoint || path.startsWith(`${endpoint}/`));
 };
 
-const redirectToLogin = () => {
-  if (typeof window === 'undefined') return;
-  if (window.location.pathname === '/login' || window.location.pathname === '/register') return;
-  window.location.href = '/login';
+type RetriableRequestConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
 };
 
-// Request interceptor to add the bearer token
-api.interceptors.request.use(
-  (config) => {
-    const token = useAuthStore.getState().accessToken;
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
+const attachAccessToken = async (config: InternalAxiosRequestConfig) => {
+  const token = await ensureValidAccessToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
+  return config;
+};
+
+const createUnauthorizedInterceptor = (client: typeof api) => async (error: AxiosError) => {
+  const originalRequest = error.config as RetriableRequestConfig | undefined;
+  if (
+    error.response?.status === 401 &&
+    originalRequest &&
+    !originalRequest._retry &&
+    !isAuthEndpoint(originalRequest.url)
+  ) {
+    originalRequest._retry = true;
+    return handleUnauthorizedResponse(() => client(originalRequest));
+  }
+  return Promise.reject(error);
+};
+
+api.interceptors.request.use(
+  async (config) => attachAccessToken(config),
+  (error) => Promise.reject(error),
 );
 
 agentApi.interceptors.request.use(
-  (config) => {
-    const token = useAuthStore.getState().accessToken;
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
+  async (config) => attachAccessToken(config),
+  (error) => Promise.reject(error),
+);
+
+orchestratorApi.interceptors.request.use(
+  async (config) => attachAccessToken(config),
+  (error) => Promise.reject(error),
+);
+
+api.interceptors.response.use(
+  (response) => response,
+  createUnauthorizedInterceptor(api),
 );
 
 agentApi.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry && !isAuthEndpoint(originalRequest.url)) {
-      originalRequest._retry = true;
-      try {
-        const refreshToken = useAuthStore.getState().refreshToken;
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-
-        const res = await axios.post('/api/auth/refresh', { refresh_token: refreshToken });
-        const { access_token, refresh_token } = res.data;
-
-        useAuthStore.getState().setTokens(access_token, refresh_token);
-        originalRequest.headers.Authorization = `Bearer ${access_token}`;
-        return agentApi(originalRequest);
-      } catch (refreshError) {
-        useAuthStore.getState().logout();
-        redirectToLogin();
-        return Promise.reject(refreshError);
-      }
-    }
-    return Promise.reject(error);
-  }
+  createUnauthorizedInterceptor(agentApi),
 );
 
-// Response interceptor to handle 401s and token refresh
-api.interceptors.response.use(
+orchestratorApi.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry && !isAuthEndpoint(originalRequest.url)) {
-      originalRequest._retry = true;
-      try {
-        const refreshToken = useAuthStore.getState().refreshToken;
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-
-        const res = await axios.post('/api/auth/refresh', { refresh_token: refreshToken });
-        const { access_token, refresh_token } = res.data;
-
-        useAuthStore.getState().setTokens(access_token, refresh_token);
-
-        originalRequest.headers.Authorization = `Bearer ${access_token}`;
-        return api(originalRequest);
-      } catch (refreshError) {
-        useAuthStore.getState().logout();
-        redirectToLogin();
-        return Promise.reject(refreshError);
-      }
-    }
-    return Promise.reject(error);
-  }
+  createUnauthorizedInterceptor(orchestratorApi),
 );
+
+export const billingApi = {
+  listPlans: () => api.get<{ plans: import("./billing").SubscriptionPlan[] }>("/billing/plans"),
+  getSubscription: () => api.get<{ subscription: import("./billing").SubscriptionSummary }>("/billing/subscription"),
+  listOrders: (limit = 20) => api.get<{ orders: import("./billing").SubscriptionOrder[] }>("/billing/orders", { params: { limit } }),
+  createCheckout: (planSlug: string) => api.post<{ order: import("./billing").SubscriptionOrder }>("/billing/checkout", { plan_slug: planSlug }),
+  confirmCheckout: (orderId: string, paymentMethod: string) =>
+    api.post<{ order: import("./billing").SubscriptionOrder }>(`/billing/checkout/${orderId}/confirm`, { payment_method: paymentMethod }),
+  cancelCheckout: (orderId: string) => api.post<{ order: import("./billing").SubscriptionOrder }>(`/billing/checkout/${orderId}/cancel`),
+};
+
+export const adminBillingApi = {
+  listPlans: () => api.get<{ plans: import("./billing").SubscriptionPlan[] }>("/admin/subscription-plans"),
+  createPlan: (body: Record<string, unknown>) => api.post("/admin/subscription-plans", body),
+  updatePlan: (id: string, body: Record<string, unknown>) => api.patch(`/admin/subscription-plans/${id}`, body),
+  listUsers: (params: Record<string, string | number>) => api.get<{ users: import("./billing").AdminUserRow[] }>("/admin/users", { params }),
+  getUser: (id: string) => api.get(`/admin/users/${id}`),
+  patchUser: (id: string, body: Record<string, unknown>) => api.patch(`/admin/users/${id}`, body),
+  getStats: () => api.get<import("./billing").SubscriptionStats>("/admin/subscription-stats"),
+};

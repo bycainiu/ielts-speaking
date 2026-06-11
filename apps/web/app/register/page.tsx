@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { useState } from "react";
@@ -49,7 +49,7 @@ export default function RegisterPage() {
       router.push("/background");
     } catch (err: unknown) {
       const apiError = err as ApiError;
-      setError(apiError.response?.data?.message || "注册失败，请稍后重试。");
+      setError(apiError.response?.data?.message || "Request failed.");
     } finally {
       setLoading(false);
     }
@@ -113,7 +113,7 @@ export default function RegisterPage() {
                   minLength={8}
                   className={inputClass}
                 />
-                <p className="text-xs text-slate-500">At least 8 characters / 至少 8 位字符</p>
+                <p className="text-xs text-slate-500">至少 8 位字符，建议包含字母与数字。</p>
               </div>
 
               {error && (
