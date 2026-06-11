@@ -499,13 +499,78 @@ func normalizeQuestionFilter(filter QuestionFilter) QuestionFilter {
 }
 
 func validateQuestionInput(input QuestionInput) error {
+	if isPlaceholderQuestionText(input.Text) {
+		return fmt.Errorf("%w: question text contains placeholder text", ErrInvalidInput)
+	}
 	if input.Part == 2 && input.CueCard == nil {
 		return fmt.Errorf("%w: Part 2 questions require cue_card", ErrInvalidInput)
 	}
 	if input.Part != 2 && input.CueCard != nil {
 		return fmt.Errorf("%w: cue_card is only allowed for Part 2", ErrInvalidInput)
 	}
+	if input.CueCard != nil && isPlaceholderQuestionText(input.CueCard.Prompt) {
+		return fmt.Errorf("%w: cue_card prompt contains placeholder text", ErrInvalidInput)
+	}
+	for index, followup := range input.Followups {
+		if isPlaceholderQuestionText(followup.Text) {
+			return fmt.Errorf("%w: followup_templates[%d].text contains placeholder text", ErrInvalidInput, index)
+		}
+	}
 	return nil
+}
+
+var placeholderQuestionTextExact = map[string]struct{}{
+	"待补充":             {},
+	"待完善":             {},
+	"待填写":             {},
+	"待确认":             {},
+	"todo":            {},
+	"tbd":             {},
+	"placeholder":     {},
+	"to be added":     {},
+	"to be completed": {},
+	"to be filled":    {},
+}
+
+var placeholderQuestionTextPrefixes = []string{"待补充", "待完善", "todo", "tbd", "placeholder"}
+
+func isPlaceholderQuestionText(value string) bool {
+	normalized := normalizeQuestionTextForValidation(value)
+	if normalized == "" {
+		return false
+	}
+	if _, ok := placeholderQuestionTextExact[normalized]; ok {
+		return true
+	}
+	for _, prefix := range placeholderQuestionTextPrefixes {
+		if strings.HasPrefix(normalized, prefix+":") || strings.HasPrefix(normalized, prefix+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeQuestionTextForValidation(value string) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(strings.ToLower(value))), " ")
+	if text == "" {
+		return ""
+	}
+	text = strings.Trim(text, "\"'`“”‘’《》「」『』()[]{}")
+	for _, prefix := range []string{"question:", "follow-up question:", "followup question:", "part 1:", "part 2:", "part 3:"} {
+		if strings.HasPrefix(text, prefix) {
+			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
+			break
+		}
+	}
+	digitCount := 0
+	for digitCount < len(text) && text[digitCount] >= '0' && text[digitCount] <= '9' {
+		digitCount++
+	}
+	if digitCount > 0 {
+		text = strings.TrimLeft(text[digitCount:], " .):：、-")
+	}
+	text = strings.Trim(text, " .?!？！。,:：;；\"'`“”‘’《》「」『』()[]{}")
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func marshalMetadata(metadata map[string]any) ([]byte, error) {

@@ -62,6 +62,12 @@ jobs:
       - name: Test Agent Harness
         run: python -m pytest services/agent-harness/tests
 
+      - name: Install Agent Orchestrator dependencies
+        run: pip install -r services/agent-orchestrator/requirements.txt
+
+      - name: Test Agent Orchestrator
+        run: python -m pytest services/agent-orchestrator/tests --ignore=services/agent-orchestrator/tests/test_real_model_integration.py
+
       - name: Run speech calibration contract gate
         working-directory: services/agent-harness
         run: python -m app.evals.speech_eval_cli calibration --contract-samples --allow-synthetic-contract --min-production-samples 0 --stdout-format summary
@@ -99,6 +105,9 @@ jobs:
 
       - name: Build agent-harness image
         run: docker compose build --pull=false agent-harness
+
+      - name: Build agent-orchestrator image
+        run: docker compose build --pull=false agent-orchestrator
 
       - name: Build speech-assessment image
         run: docker compose build --pull=false speech-assessment

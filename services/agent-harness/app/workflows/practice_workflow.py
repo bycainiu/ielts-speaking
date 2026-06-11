@@ -87,7 +87,7 @@ class PracticeWorkflow:
         self.followup_planner = followup_planner or FollowupPlannerAgent()
 
     def plan(self, session_id: str, request: PlanRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         question_plan = self.question_planner.plan(request)
         target_parts = question_plan.target_parts
         first_part = target_parts[0]
@@ -133,7 +133,7 @@ class PracticeWorkflow:
         return response
 
     def consume_asr(self, session_id: str, request: ConsumeAsrRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         state = self._state_for_asr(session_id, request)
         followup_plan = self._plan_followup(state, request)
         events = [
@@ -182,7 +182,7 @@ class PracticeWorkflow:
         return AgentResponse(run_id=run_id, events=events, state=state, next_action=followup_plan.next_action)
 
     def next_turn(self, session_id: str, request: NextTurnRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         state = deepcopy(request.session_state)
         self._ensure_state_defaults(state)
         state["question_index"] += 1
@@ -244,13 +244,13 @@ class PracticeWorkflow:
     def _ask_current_question(self, session_id: str, run_id: str, state: dict[str, Any]) -> AgentResponse:
         current_part = int(state["current_part"])
         suggested_seconds = self._suggested_seconds(state, current_part)
-        examiner_payload = self._examiner_payload(state)
+        utterance = self._build_examiner_utterance(state)
         payload: dict[str, Any] = {
             "part": current_part,
-            "question_id": examiner_payload["question_id"],
-            "text": examiner_payload["text"],
+            "question_id": utterance.question_id,
+            "text": utterance.text,
             "timer_policy": self._timer_policy_payload(state, current_part, suggested_seconds),
-            "style_tags": examiner_payload["style_tags"],
+            "style_tags": utterance.style_tags,
             "practice_mode": True,
             "part_timebox_seconds": self._timebox_seconds(state, current_part),
             **mode_policy_payload(state),
@@ -262,30 +262,47 @@ class PracticeWorkflow:
         if current_part == 2:
             payload["cue_card"] = self._cue_card_payload(state)
 
-        events = [
-            build_event("examiner.message", session_id, run_id, payload),
-            build_event(
-                "timer.started",
-                session_id,
-                run_id,
-                {
-                    "part": current_part,
-                    "suggested_seconds": suggested_seconds,
-                    "timebox_seconds": self._timebox_seconds(state, current_part),
-                    "practice_mode": True,
-                    **mode_policy_payload(state),
-                    **self._part2_timer_fields(state, current_part),
-                },
-            ),
-        ]
+        events = []
+        if utterance.reasoning_text:
+            events.append(
+                build_event(
+                    "examiner.thinking",
+                    session_id,
+                    run_id,
+                    {
+                        "part": utterance.part,
+                        "question_id": utterance.question_id,
+                        "text": utterance.reasoning_text,
+                        "generated_by": utterance.generated_by,
+                    },
+                )
+            )
+        events.extend(
+            [
+                build_event("examiner.message", session_id, run_id, payload),
+                build_event(
+                    "timer.started",
+                    session_id,
+                    run_id,
+                    {
+                        "part": current_part,
+                        "suggested_seconds": suggested_seconds,
+                        "timebox_seconds": self._timebox_seconds(state, current_part),
+                        "practice_mode": True,
+                        **mode_policy_payload(state),
+                        **self._part2_timer_fields(state, current_part),
+                    },
+                ),
+            ]
+        )
         return AgentResponse(run_id=run_id, events=events, state=state, next_action="wait_for_user_answer")
 
-    def _examiner_payload(self, state: dict[str, Any]) -> dict[str, Any]:
+    def _build_examiner_utterance(self, state: dict[str, Any]):
         current_part = int(state["current_part"])
         questions = self._questions_for_state(state)
         question_index = int(state["question_index"])
         question = questions[question_index]
-        utterance = self.examiner_agent.build_turn(
+        return self.examiner_agent.build_turn(
             ExaminerTurnInput(
                 mode=state.get("mode", "part_practice"),
                 part=current_part,
@@ -296,12 +313,6 @@ class PracticeWorkflow:
                 practice_mode=True,
             )
         )
-        return {
-            "part": utterance.part,
-            "question_id": utterance.question_id,
-            "text": utterance.text,
-            "style_tags": utterance.style_tags,
-        }
 
     def _part_started_event(self, session_id: str, run_id: str, part: int, state: dict[str, Any]):
         part_plan = self._part_plan(state, part)

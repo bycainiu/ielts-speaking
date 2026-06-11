@@ -1,0 +1,37 @@
+# LAN HTTPS reverse proxy via Caddy
+# Set LAN_HOST in your .env file (e.g. LAN_HOST=192.168.1.100)
+# Caddy uses "tls internal" to auto-issue a self-signed cert trusted by its own CA.
+# Run: mkcert -install  (once per browser/device) to avoid the security warning.
+
+{
+	admin off
+	# When the client sends no SNI (e.g. raw-IP connections from Android/Windows schannel),
+	# Caddy falls back to this hostname to pick the right certificate.
+	default_sni {$LAN_HOST:localhost}
+}
+
+# Main web app (Next.js) + API rewrites + WebSocket support
+# Include 127.0.0.1 so https://127.0.0.1 works and bypasses WSL2 IPv6 relay conflict
+{$LAN_HOST:localhost}, localhost, 127.0.0.1 {
+	tls internal
+
+	# WebSocket / SSE: long-lived connections need longer timeouts
+	reverse_proxy web:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 0
+			read_timeout 0
+		}
+	}
+}
+
+# MinIO S3 presigned-URL access (audio playback needs HTTPS to avoid mixed-content)
+# Accessible at https://<LAN_HOST>:9443
+:9443 {
+	tls internal
+
+	reverse_proxy minio:9000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

@@ -4,6 +4,7 @@ import "context"
 
 type Store interface {
 	RecordAdminAudit(ctx context.Context, input AdminAuditInput) error
+	ListAdminAudits(ctx context.Context, filter AdminAuditLogFilter) ([]AdminAuditLog, error)
 
 	CreateKnowledgeDoc(ctx context.Context, input KnowledgeDocInput, actorUserID string) (KnowledgeDoc, error)
 	ListKnowledgeDocs(ctx context.Context, filter KnowledgeDocFilter) ([]KnowledgeDoc, error)

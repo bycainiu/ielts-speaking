@@ -26,6 +26,11 @@ func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authent
 	reports.GET("/feedback/export", auth.RequireRoles("operator", "admin"), h.ExportReportFeedback)
 	reports.POST("/:report_id/feedback", h.SubmitReportFeedback)
 
+	admin := api.Group("/admin")
+	admin.Use(auth.AuthMiddleware(authenticator), auth.RequireRoles("operator", "admin"))
+	admin.GET("/reports", h.AdminListReports)
+	admin.GET("/sessions/:id/report", h.AdminGetLatestReport)
+
 	group := api.Group("/sessions/:id/report")
 	group.Use(auth.AuthMiddleware(authenticator))
 	group.GET("", h.GetLatestReport)
@@ -39,6 +44,26 @@ func (h Handler) ListReports(c *gin.Context) {
 		return
 	}
 	items, err := h.store.ListReports(c.Request.Context(), auth.CurrentUserID(c), filter)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"reports": items,
+		"pagination": gin.H{
+			"limit":  filter.Limit,
+			"offset": filter.Offset,
+		},
+	})
+}
+
+func (h Handler) AdminListReports(c *gin.Context) {
+	filter, err := parseReportHistoryFilter(c)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	items, err := h.store.ListReportsForAdmin(c.Request.Context(), filter)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -87,6 +112,15 @@ func (h Handler) ExportReportFeedback(c *gin.Context) {
 
 func (h Handler) GetLatestReport(c *gin.Context) {
 	item, err := h.store.GetLatestReport(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"report": item})
+}
+
+func (h Handler) AdminGetLatestReport(c *gin.Context) {
+	item, err := h.store.GetLatestReportForAdmin(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -146,6 +180,15 @@ func parseReportHistoryFilter(c *gin.Context) (ReportHistoryFilter, error) {
 		return ReportHistoryFilter{}, ErrInvalidInput
 	}
 
+	userID, err := uuidQuery(c, "user_id")
+	if err != nil {
+		return ReportHistoryFilter{}, err
+	}
+	sessionID, err := uuidQuery(c, "session_id")
+	if err != nil {
+		return ReportHistoryFilter{}, err
+	}
+
 	limit, err := boundedIntQuery(c, "limit", 30, 1, 100)
 	if err != nil {
 		return ReportHistoryFilter{}, err
@@ -156,12 +199,14 @@ func parseReportHistoryFilter(c *gin.Context) (ReportHistoryFilter, error) {
 	}
 
 	return ReportHistoryFilter{
-		Mode:   mode,
-		Part:   part,
-		From:   from,
-		To:     to,
-		Limit:  limit,
-		Offset: offset,
+		Mode:      mode,
+		Part:      part,
+		From:      from,
+		To:        to,
+		UserID:    userID,
+		SessionID: sessionID,
+		Limit:     limit,
+		Offset:    offset,
 	}, nil
 }
 
@@ -205,6 +250,17 @@ func dateQuery(c *gin.Context, key string) (*time.Time, error) {
 		return nil, ErrInvalidInput
 	}
 	return &parsed, nil
+}
+
+func uuidQuery(c *gin.Context, key string) (string, error) {
+	value := strings.TrimSpace(c.Query(key))
+	if value == "" {
+		return "", nil
+	}
+	if !uuidPattern.MatchString(value) {
+		return "", ErrInvalidInput
+	}
+	return value, nil
 }
 
 func boundedIntQuery(c *gin.Context, key string, fallback int, minValue int, maxValue int) (int, error) {

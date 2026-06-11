@@ -7,7 +7,7 @@ CREATE TYPE user_status AS ENUM ('active', 'disabled', 'deleted');
 CREATE TYPE content_status AS ENUM ('draft', 'reviewing', 'active', 'archived');
 CREATE TYPE source_type AS ENUM ('original', 'authorized', 'user_recall', 'internal');
 CREATE TYPE session_mode AS ENUM ('full_exam', 'part_practice', 'topic_practice');
-CREATE TYPE session_status AS ENUM ('created', 'planned', 'in_progress', 'scoring', 'completed', 'cancelled', 'failed');
+CREATE TYPE session_status AS ENUM ('created', 'planned', 'in_progress', 'paused', 'scoring', 'completed', 'cancelled', 'failed');
 CREATE TYPE turn_status AS ENUM ('pending', 'recording', 'asr_processing', 'completed', 'failed');
 CREATE TYPE audio_kind AS ENUM ('user_recording', 'examiner_tts', 'reference');
 CREATE TYPE report_status AS ENUM ('generating', 'ready', 'failed');

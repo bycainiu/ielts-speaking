@@ -36,6 +36,24 @@ NextAction = Literal[
     "finish_session",
     "retry_current_node",
 ]
+AgentStreamEventKind = Literal[
+    "run.started",
+    "step.started",
+    "message.delta",
+    "reasoning.delta",
+    "tool.started",
+    "tool.delta",
+    "tool.completed",
+    "markdown.delta",
+    "question.requested",
+    "usage.updated",
+    "step.completed",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "heartbeat",
+]
+AgentStreamVisibility = Literal["default", "admin", "reasoning", "hidden"]
 
 
 class StrictModel(BaseModel):
@@ -50,6 +68,42 @@ class SessionEvent(StrictModel):
     created_at: datetime
 
 
+class AgentUsageDetail(StrictModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
+
+
+class AgentReasoningBlock(StrictModel):
+    block_id: str
+    type: str = "reasoning"
+    text: str | None = None
+    provider: str | None = None
+    raw: Any = None
+    created_at: datetime
+
+
+class AgentStreamEvent(StrictModel):
+    seq: int = Field(ge=0)
+    event_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    step_id: str | None = None
+    parent_id: str | None = None
+    kind: AgentStreamEventKind
+    phase: str | None = None
+    role: str | None = None
+    content_delta: str | None = None
+    reasoning_delta: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    usage: AgentUsageDetail | None = None
+    visibility: AgentStreamVisibility = "default"
+    created_at: datetime
+
+
 class PlanRequest(StrictModel):
     mode: SessionMode
     user_id: str = Field(min_length=1)
@@ -59,18 +113,21 @@ class PlanRequest(StrictModel):
     topic_labels: list[str] = Field(default_factory=list)
     session_seed: str | None = Field(default=None, min_length=1)
     user_background: dict[str, Any] = Field(default_factory=dict)
+    run_id_override: str | None = Field(default=None, min_length=1)
 
 
 class NextTurnRequest(StrictModel):
     session_state: dict[str, Any]
+    run_id_override: str | None = Field(default=None, min_length=1)
 
 
 class ConsumeAsrRequest(StrictModel):
     turn_id: str = Field(min_length=1)
-    asr_text: str = Field(min_length=1)
+    asr_text: str
     audio_asset_id: str | None = None
     asr_confidence: float | None = Field(default=None, ge=0, le=1)
     session_state: dict[str, Any] = Field(default_factory=dict)
+    run_id_override: str | None = Field(default=None, min_length=1)
 
 
 class TranscribeAudioRequest(StrictModel):

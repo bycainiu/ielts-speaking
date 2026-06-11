@@ -8,9 +8,11 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.content.question_text import is_placeholder_question_text
 from app.mcp.question_bank_mcp import QuestionBankMcpTools, SearchQuestionsResult
 from app.mcp.security import McpAuthorizationError, McpToolContext
 from app.protocols.schemas import PlanRequest, SessionMode
+from app.rag.llamaindex_service import KnowledgeServiceError
 
 
 QUESTION_BANK_READ_SCOPE = "question_bank:read"
@@ -209,7 +211,7 @@ class QuestionSetPlannerAgent:
                     topic_id=topic_id,
                     top_k=top_k,
                 )
-            except (McpAuthorizationError, ValueError):
+            except (McpAuthorizationError, ValueError, KnowledgeServiceError):
                 continue
             candidates.extend(planned_questions_from_search(result, cue_cards=cue_cards_for_result(self.question_bank_tools, context, result)))
         return candidates
@@ -364,6 +366,8 @@ def planned_questions_from_search(result: SearchQuestionsResult, *, cue_cards: M
     cue_cards = cue_cards or {}
     for item in result.results:
         question_text = extract_question_text(item.content)
+        if is_placeholder_question_text(question_text):
+            continue
         cue_card = cue_cards.get(item.question_id) if item.part == 2 else None
         if item.part == 2 and cue_card is None:
             cue_card = default_cue_card(question_text)
@@ -395,12 +399,14 @@ def followup_questions_for_context(
         return []
     try:
         result = question_bank_tools.get_followup_templates(context, question_id=part2_question_id, part=3)
-    except (McpAuthorizationError, ValueError):
+    except (McpAuthorizationError, ValueError, KnowledgeServiceError):
         return []
 
     planned: list[PlannedQuestion] = []
     linked_topic = _optional_text(linked_part2_context.get("topic"))
     for index, item in enumerate(result.followups):
+        if is_placeholder_question_text(item.text):
+            continue
         followup_id = _optional_text(item.followup_id) or f"{part2_question_id}:followup:{index + 1}"
         planned.append(
             PlannedQuestion(
@@ -433,7 +439,7 @@ def cue_cards_for_result(
             continue
         try:
             cue_card = question_bank_tools.get_cue_card(context, question_id=item.question_id)
-        except (McpAuthorizationError, ValueError):
+        except (McpAuthorizationError, ValueError, KnowledgeServiceError):
             continue
         if cue_card is None:
             continue

@@ -24,6 +24,23 @@ from app.protocols.schemas import AgentResponse
 from app.rag.chunk_schema import ScoringCriterion
 
 
+SCORING_CRITERIA: tuple[ScoringCriterion, ...] = (
+    "fluency_coherence",
+    "lexical_resource",
+    "grammatical_range_accuracy",
+    "pronunciation",
+)
+UNSCORABLE_BAND = 0.0
+UNSCORABLE_CONFIDENCE = 0.1
+UNSCORABLE_REASON_NO_TRANSCRIPT = "no_transcript_recognized"
+UNSCORABLE_SUGGESTIONS: dict[ScoringCriterion, str] = {
+    "fluency_coherence": "先确认麦克风、录音权限和 ASR 服务可用，再提交一轮至少 20 秒的完整回答。",
+    "lexical_resource": "本轮没有可识别文本，暂无法判断词汇；重录时先用 2-3 个具体名词回答题目。",
+    "grammatical_range_accuracy": "本轮没有可识别文本，暂无法判断语法；重录时优先保证一句主句加一个 because 原因。",
+    "pronunciation": "本轮没有可识别文本，暂无法判断发音；重录前检查输入设备、环境噪音和浏览器权限。",
+}
+
+
 class ScoreSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -32,6 +49,7 @@ class ScoreSessionRequest(BaseModel):
     anchor_samples: list[CalibrationAnchorSample] = Field(default_factory=list)
     topic_keywords: list[str] = Field(default_factory=list)
     model_run_id: str | None = None
+    run_id_override: str | None = Field(default=None, min_length=1)
 
 
 class ScoringWorkflow:
@@ -56,13 +74,22 @@ class ScoringWorkflow:
         self.feedback_coach = feedback_coach or FeedbackCoachAgent()
 
     def score_session(self, session_id: str, request: ScoreSessionRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         state = deepcopy(request.session_state)
         state.setdefault("session_id", session_id)
         state["status"] = "scoring"
 
+        raw_answer_count = count_answer_records(state)
         answers = normalize_answers(state)
         if not answers:
+            if raw_answer_count:
+                return self._score_unscorable_session(
+                    session_id,
+                    run_id,
+                    state,
+                    raw_answer_count=raw_answer_count,
+                    reason=UNSCORABLE_REASON_NO_TRANSCRIPT,
+                )
             state["scoring_error"] = "no_scorable_answers"
             return AgentResponse(
                 run_id=run_id,
@@ -212,6 +239,125 @@ class ScoringWorkflow:
             next_action="finish_session",
         )
 
+    def _score_unscorable_session(
+        self,
+        session_id: str,
+        run_id: str,
+        state: dict[str, Any],
+        *,
+        raw_answer_count: int,
+        reason: str,
+    ) -> AgentResponse:
+        criteria = build_unscorable_criteria(reason=reason, raw_answer_count=raw_answer_count)
+        reviewer_notes = [
+            "本轮存在录音或回答记录，但没有识别出可评分英文转写；报告仅用于闭环记录和恢复会话状态。",
+            "请检查麦克风权限、输入设备、网络和 ASR 服务后重新练习。",
+        ]
+        raw_report = {
+            "workflow_version": self.workflow_version,
+            "scoring_status": "unscorable",
+            "reason": reason,
+            "raw_answer_count": raw_answer_count,
+            "scorable_answer_count": 0,
+            "policy": "generate_empty_report_when_asr_text_is_empty",
+        }
+        report = ScoreReportInput(
+            session_id=session_id,
+            overall_band=UNSCORABLE_BAND,
+            confidence=UNSCORABLE_CONFIDENCE,
+            criteria=criteria,
+            reviewer_notes=reviewer_notes,
+            model_run_id=run_id,
+            raw_report=raw_report,
+        )
+        feedback = self.feedback_coach.generate(
+            FeedbackCoachInput(
+                session_id=session_id,
+                score_report=report,
+                answers=[],
+                user_background=user_background_from_state(state),
+            )
+        )
+        feedback_summary = "本轮未识别到可评分转写，系统已生成空复盘以完成会话；重录前请优先确认麦克风和 ASR 服务状态。"
+        report = report.model_copy(
+            update={
+                "next_practice_plan": feedback.next_practice_plan,
+                "raw_report": {
+                    **raw_report,
+                    "feedback": feedback.raw_output,
+                    "feedback_summary": feedback_summary,
+                },
+            }
+        )
+        state["status"] = "scored"
+        state.pop("scoring_error", None)
+        state["scoring_warning"] = reason
+        state["score_report"] = report.model_dump(mode="json", exclude_none=True)
+        state["score_calibration"] = {"status": "skipped", "reason": reason}
+        state["feedback_summary"] = feedback_summary
+        state["feedback_items"] = [item.model_dump(mode="json") for item in feedback.feedback_items]
+        state["reference_answers"] = []
+
+        dimension_events = [
+            build_event(
+                "scoring.dimension_completed",
+                session_id,
+                run_id,
+                {
+                    "criterion": criterion,
+                    "band": score.band,
+                    "confidence": score.confidence,
+                    "evidence_count": len(score.evidence),
+                    "unscorable": True,
+                    "reason": reason,
+                },
+            )
+            for criterion, score in criteria.items()
+        ]
+        return AgentResponse(
+            run_id=run_id,
+            events=[
+                *dimension_events,
+                build_event(
+                    "scoring.review_completed",
+                    session_id,
+                    run_id,
+                    {
+                        "status": "skipped_no_scorable_transcript",
+                        "finding_count": len(reviewer_notes),
+                        "reviewer_notes": reviewer_notes,
+                        "reason": reason,
+                    },
+                ),
+                build_event(
+                    "report.ready",
+                    session_id,
+                    run_id,
+                    {
+                        "overall_band": report.overall_band,
+                        "confidence": report.confidence,
+                        "criteria": {
+                            criterion: {
+                                "band": score.band,
+                                "confidence": score.confidence,
+                                "evidence_count": len(score.evidence),
+                            }
+                            for criterion, score in report.criteria.items()
+                        },
+                        "calibration_status": "skipped",
+                        "feedback_count": len(feedback.feedback_items),
+                        "reference_answer_count": 0,
+                        "next_practice_plan_count": len(report.next_practice_plan),
+                        "disclaimer": report.disclaimer,
+                        "unscorable": True,
+                        "reason": reason,
+                    },
+                ),
+            ],
+            state=state,
+            next_action="finish_session",
+        )
+
     def _score_dimensions(
         self,
         session_id: str,
@@ -275,6 +421,29 @@ def normalize_answers(state: dict[str, Any]) -> list[dict[str, Any]]:
         normalized["transcript"] = transcript
         answers.append(normalized)
     return answers
+
+
+def count_answer_records(state: dict[str, Any]) -> int:
+    return sum(1 for item in state.get("answers") or [] if isinstance(item, dict))
+
+
+def build_unscorable_criteria(*, reason: str, raw_answer_count: int) -> dict[ScoringCriterion, CriterionScoreInput]:
+    return {
+        criterion: CriterionScoreInput(
+            band=UNSCORABLE_BAND,
+            confidence=UNSCORABLE_CONFIDENCE,
+            evidence=[],
+            suggestions=[UNSCORABLE_SUGGESTIONS[criterion]],
+            raw_output={
+                "scorer_version": f"{criterion}_unscorable.v1",
+                "scoring_status": "unscorable",
+                "reason": reason,
+                "raw_answer_count": raw_answer_count,
+                "scorable_answer_count": 0,
+            },
+        )
+        for criterion in SCORING_CRITERIA
+    }
 
 
 def fluency_turn(answer: dict[str, Any]) -> FluencyScoringTurn:

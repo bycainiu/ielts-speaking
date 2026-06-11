@@ -68,14 +68,18 @@ class McpAuditRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     audit_id: str | None = None
+    phase: Literal["authorization", "execution"] = "authorization"
     tool_name: str
     user_id_hash: str
     session_id: str
     request_id: str | None = None
-    status: Literal["allowed", "denied"]
+    status: Literal["allowed", "denied", "completed", "failed"]
     reason: str | None = None
     required_scopes: list[str] = Field(default_factory=list)
     granted_scopes: list[str] = Field(default_factory=list)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    output_payload: Any = None
+    latency_ms: int | None = Field(default=None, ge=0)
 
 
 class McpAuditSink(Protocol):
@@ -150,6 +154,39 @@ def authorize_tool_call(
     _record_audit(context, sink, tool_name=tool_name, required_scopes=required, status="allowed", reason=None)
 
 
+def record_tool_execution(
+    context: McpToolContext,
+    *,
+    tool_name: str,
+    required_scopes: Iterable[str],
+    status: Literal["completed", "failed"],
+    arguments: dict[str, Any] | None = None,
+    output_payload: Any = None,
+    reason: str | None = None,
+    latency_ms: int | None = None,
+    audit_sink: McpAuditSink | None = None,
+) -> McpAuditRecord:
+    tool_name = _normalize_text(tool_name, field_name="tool_name")
+    required = [_normalize_text(scope, field_name="required_scope") for scope in required_scopes]
+    sink = audit_sink or _DEFAULT_AUDIT_SINK
+    return sink.record(
+        McpAuditRecord(
+            phase="execution",
+            tool_name=tool_name,
+            user_id_hash=hash_user_id(context.user_id, salt=context.audit_hash_salt),
+            session_id=context.session_id,
+            request_id=context.request_id,
+            status=status,
+            reason=reason,
+            required_scopes=required,
+            granted_scopes=context.scopes,
+            arguments=dict(arguments or {}),
+            output_payload=output_payload,
+            latency_ms=latency_ms,
+        )
+    )
+
+
 def _record_audit(
     context: McpToolContext,
     sink: McpAuditSink,
@@ -161,6 +198,7 @@ def _record_audit(
 ) -> McpAuditRecord:
     return sink.record(
         McpAuditRecord(
+            phase="authorization",
             tool_name=tool_name,
             user_id_hash=hash_user_id(context.user_id, salt=context.audit_hash_salt),
             session_id=context.session_id,

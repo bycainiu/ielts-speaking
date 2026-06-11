@@ -101,6 +101,44 @@ def test_part_two_content_includes_cue_card_and_active_followups() -> None:
     assert result.indexed_count == 1
 
 
+def test_indexer_skips_placeholder_question_and_followups() -> None:
+    service = make_memory_service()
+    indexer = QuestionBankIndexer(service)
+    placeholder_record = QuestionBankRecord(
+        question_id=ARCHIVED_QUESTION_ID,
+        season_id=ACTIVE_SEASON_ID,
+        part=3,
+        text="待补充",
+        topic="city",
+        source_type="original",
+        review_status="active",
+    )
+    part2_record = QuestionBankRecord(
+        question_id=FOOD_QUESTION_ID,
+        season_id=ACTIVE_SEASON_ID,
+        part=2,
+        text="Describe a meal you enjoyed.",
+        topic="food",
+        source_type="authorized",
+        cue_card={
+            "prompt": "Describe a meal you enjoyed with other people.",
+            "bullet_points": ["what the meal was"],
+        },
+        followup_templates=[
+            {"part": 3, "text": "Why do people like eating together?", "sort_order": 1, "review_status": "active"},
+            {"part": 3, "text": "待补充", "sort_order": 2, "review_status": "active"},
+        ],
+    )
+
+    result = indexer.index_records([placeholder_record, part2_record], active_season_id=ACTIVE_SEASON_ID)
+    match = indexer.search_questions("meal enjoyed together", active_season_id=ACTIVE_SEASON_ID, part=2, top_k=1)[0]
+
+    assert result.indexed_count == 1
+    assert {item.reason for item in result.skipped_questions} == {"placeholder_question_text"}
+    assert match.metadata["followup_count"] == 1
+    assert [item["text"] for item in match.metadata["followup_templates"]] == ["Why do people like eating together?"]
+
+
 def test_sync_from_source_passes_active_season_filters() -> None:
     source = FakeQuestionBankSource(make_question_records())
     indexer = QuestionBankIndexer(make_memory_service())

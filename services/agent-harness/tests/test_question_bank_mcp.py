@@ -3,12 +3,19 @@ import pytest
 from app.mcp.question_bank_mcp import QuestionBankMcpTools
 from app.mcp.security import McpAuthorizationError, McpToolContext
 from app.rag.ingestion.question_bank_indexer import QuestionBankIndexer, QuestionBankRecord
-from app.rag.llamaindex_service import HashEmbeddingProvider, InMemoryKnowledgeStore, LlamaIndexKnowledgeService
+from app.rag.llamaindex_service import (
+    HashEmbeddingProvider,
+    InMemoryKnowledgeStore,
+    KnowledgeSearchResult,
+    LlamaIndexKnowledgeService,
+)
 
 
 ACTIVE_SEASON_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 CITY_QUESTION_ID = "11111111-1111-1111-1111-111111111111"
 FOOD_QUESTION_ID = "22222222-2222-2222-2222-222222222222"
+VALID_PART3_QUESTION_ID = "33333333-3333-3333-3333-333333333333"
+PLACEHOLDER_PART3_QUESTION_ID = "44444444-4444-4444-4444-444444444444"
 
 
 def test_search_questions_requires_scope_and_returns_source_refs() -> None:
@@ -95,6 +102,22 @@ def test_get_followup_templates_filters_by_part_and_ignores_archived_items() -> 
     assert all(item.source_ref.doc_id == FOOD_QUESTION_ID for item in result.followups)
 
 
+def test_search_questions_skips_placeholder_question_records() -> None:
+    tools = QuestionBankMcpTools(FakeSearchIndexer())
+    context = read_context(allowed_tools=["search_questions"])
+
+    result = tools.search_questions(
+        context,
+        query="travel",
+        active_season_id=ACTIVE_SEASON_ID,
+        part=3,
+        top_k=5,
+    )
+
+    assert [item.question_id for item in result.results] == [VALID_PART3_QUESTION_ID]
+    assert all("待补充" not in item.content for item in result.results)
+
+
 def make_tools() -> QuestionBankMcpTools:
     indexer = QuestionBankIndexer(make_memory_service())
     indexer.index_records(make_question_records(), active_season_id=ACTIVE_SEASON_ID)
@@ -169,4 +192,56 @@ def make_question_records() -> list[QuestionBankRecord]:
                 },
             ],
         ),
+        QuestionBankRecord(
+            question_id=VALID_PART3_QUESTION_ID,
+            season_id=ACTIVE_SEASON_ID,
+            part=3,
+            text="Why do some families eat together less often now?",
+            topic="food",
+            source_type="authorized",
+            review_status="active",
+        ),
+        QuestionBankRecord(
+            question_id=PLACEHOLDER_PART3_QUESTION_ID,
+            season_id=ACTIVE_SEASON_ID,
+            part=3,
+            text="待补充",
+            topic="food",
+            source_type="authorized",
+            review_status="active",
+        ),
     ]
+
+
+class FakeSearchIndexer:
+    def search_questions(self, *args: object, **kwargs: object) -> list[KnowledgeSearchResult]:
+        return [
+            KnowledgeSearchResult(
+                chunk_id="chunk_valid",
+                doc_id=VALID_PART3_QUESTION_ID,
+                doc_type="question_bank",
+                title="Part 3 travel: valid",
+                content="Question: Why do some people enjoy travelling alone?",
+                metadata={
+                    "question_id": VALID_PART3_QUESTION_ID,
+                    "part": "3",
+                    "topic": "travel",
+                    "season_id": ACTIVE_SEASON_ID,
+                },
+                score=0.92,
+            ),
+            KnowledgeSearchResult(
+                chunk_id="chunk_placeholder",
+                doc_id=PLACEHOLDER_PART3_QUESTION_ID,
+                doc_type="question_bank",
+                title="Part 3 travel: placeholder",
+                content="Question: 待补充",
+                metadata={
+                    "question_id": PLACEHOLDER_PART3_QUESTION_ID,
+                    "part": "3",
+                    "topic": "travel",
+                    "season_id": ACTIVE_SEASON_ID,
+                },
+                score=0.99,
+            ),
+        ]

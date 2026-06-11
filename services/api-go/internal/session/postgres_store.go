@@ -7,16 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
 type PostgresStore struct {
-	db *sql.DB
+	db                *sql.DB
+	traceUserHashSalt string
 }
 
-func NewPostgresStore(db *sql.DB) PostgresStore {
-	return PostgresStore{db: db}
+func NewPostgresStore(db *sql.DB, traceUserHashSalt string) PostgresStore {
+	return PostgresStore{
+		db:                db,
+		traceUserHashSalt: strings.TrimSpace(traceUserHashSalt),
+	}
 }
 
 func (s PostgresStore) CreateSession(ctx context.Context, userID string, input CreateSessionInput) (PracticeSession, error) {
@@ -121,6 +126,123 @@ func (s PostgresStore) GetSession(ctx context.Context, userID string, sessionID 
 	return session, nil
 }
 
+func (s PostgresStore) GetSessionContextsForAdmin(ctx context.Context, sessionIDs []string) ([]AdminSessionContext, error) {
+	args, placeholders := buildAdminSessionContextLookup(sessionIDs)
+	if len(args) == 0 {
+		return []AdminSessionContext{}, nil
+	}
+
+	query := fmt.Sprintf(`
+		select
+			ps.id::text,
+			ps.user_id::text,
+			u.email,
+			up.display_name,
+			ps.mode::text,
+			ps.status::text,
+			ps.season_id::text,
+			s.title,
+			ps.topic_id::text,
+			t.name,
+			ps.target_part,
+			ps.state,
+			ps.started_at,
+			ps.completed_at,
+			ps.created_at,
+			ps.updated_at
+		from practice_sessions ps
+		join users u on u.id = ps.user_id and u.deleted_at is null
+		left join user_profiles up on up.user_id = ps.user_id and up.deleted_at is null
+		left join seasons s on s.id = ps.season_id and s.deleted_at is null
+		left join topics t on t.id = ps.topic_id and t.deleted_at is null
+		where ps.deleted_at is null and ps.id::text in (%s)
+		order by ps.updated_at desc
+	`, placeholders)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	contexts := make([]AdminSessionContext, 0, len(args))
+	for rows.Next() {
+		item, scanErr := scanAdminSessionContext(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		contexts = append(contexts, item)
+	}
+	return contexts, rows.Err()
+}
+
+func (s PostgresStore) GetUserContextsByHashForAdmin(ctx context.Context, userHashes []string) ([]AdminUserContext, error) {
+	normalizedHashes := normalizeSessionIDs(userHashes)
+	if len(normalizedHashes) == 0 {
+		return []AdminUserContext{}, nil
+	}
+
+	args := make([]any, 0, len(normalizedHashes)+1)
+	args = append(args, s.traceUserHashSalt)
+	placeholders := make([]string, 0, len(normalizedHashes))
+	for index, item := range normalizedHashes {
+		args = append(args, item)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", index+2))
+	}
+
+	query := fmt.Sprintf(`
+		select
+			u.id::text,
+			'sha256:' || encode(digest($1 || ':' || u.id::text, 'sha256'), 'hex'),
+			u.email,
+			up.display_name,
+			u.created_at,
+			u.updated_at
+		from users u
+		left join user_profiles up on up.user_id = u.id and up.deleted_at is null
+		where u.deleted_at is null
+			and ('sha256:' || encode(digest($1 || ':' || u.id::text, 'sha256'), 'hex')) in (%s)
+		order by u.updated_at desc
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	contexts := make([]AdminUserContext, 0, len(normalizedHashes))
+	for rows.Next() {
+		item, scanErr := scanAdminUserContext(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		contexts = append(contexts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return sortAdminUserContextsByLookup(contexts, lookupOrderFromStrings(normalizedHashes)), nil
+}
+
+func (s PostgresStore) GetSessionForAdmin(ctx context.Context, sessionID string) (PracticeSession, error) {
+	session, err := scanPracticeSession(s.db.QueryRowContext(ctx, `
+		select id::text, user_id::text, mode::text, status::text, season_id::text, topic_id::text,
+			target_part, state, started_at, completed_at, created_at, updated_at
+		from practice_sessions
+		where id = $1::uuid and deleted_at is null
+	`, sessionID))
+	if err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+
+	if err := s.loadSessionDetails(ctx, &session); err != nil {
+		return PracticeSession{}, err
+	}
+	return session, nil
+}
+
 func (s PostgresStore) StartSession(ctx context.Context, userID string, sessionID string) (PracticeSession, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -131,7 +253,7 @@ func (s PostgresStore) StartSession(ctx context.Context, userID string, sessionI
 	result, err := tx.ExecContext(ctx, `
 		update practice_sessions
 		set status = 'in_progress', started_at = coalesce(started_at, now())
-		where id = $1::uuid and user_id = $2::uuid and deleted_at is null and status in ('created', 'planned', 'in_progress')
+		where id = $1::uuid and user_id = $2::uuid and deleted_at is null and status in ('created', 'planned', 'paused', 'in_progress')
 	`, sessionID, userID)
 	if err != nil {
 		return PracticeSession{}, mapError(err)
@@ -154,6 +276,107 @@ func (s PostgresStore) StartSession(ctx context.Context, userID string, sessionI
 	}
 
 	if err := tx.Commit(); err != nil {
+		return PracticeSession{}, err
+	}
+	return s.GetSession(ctx, userID, sessionID)
+}
+
+func (s PostgresStore) PauseSession(ctx context.Context, userID string, sessionID string) (PracticeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PracticeSession{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		update practice_sessions
+		set status = 'paused'
+		where id = $1::uuid and user_id = $2::uuid and deleted_at is null and status in ('created', 'planned', 'in_progress', 'paused')
+	`, sessionID, userID)
+	if err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+	if err := requireAffected(result); err != nil {
+		return PracticeSession{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		update session_parts
+		set status = 'paused'
+		where session_id = $1::uuid and status = 'in_progress'
+	`, sessionID); err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return PracticeSession{}, err
+	}
+	return s.GetSession(ctx, userID, sessionID)
+}
+
+func (s PostgresStore) ResumeSession(ctx context.Context, userID string, sessionID string) (PracticeSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PracticeSession{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		update practice_sessions
+		set status = 'in_progress', started_at = coalesce(started_at, now())
+		where id = $1::uuid and user_id = $2::uuid and deleted_at is null and status in ('paused', 'in_progress')
+	`, sessionID, userID)
+	if err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+	if err := requireAffected(result); err != nil {
+		return PracticeSession{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		update session_parts
+		set status = 'in_progress', started_at = coalesce(started_at, now())
+		where session_id = $1::uuid and status = 'paused'
+	`, sessionID); err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		update session_parts
+		set status = 'in_progress', started_at = coalesce(started_at, now())
+		where id = (
+			select id from session_parts
+			where session_id = $1::uuid and status = 'created'
+			order by order_index asc
+			limit 1
+		) and not exists (
+			select 1 from session_parts
+			where session_id = $1::uuid and status = 'in_progress'
+		)
+	`, sessionID); err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return PracticeSession{}, err
+	}
+	return s.GetSession(ctx, userID, sessionID)
+}
+
+func (s PostgresStore) UpdateSessionState(ctx context.Context, userID string, sessionID string, input UpdateSessionStateInput) (PracticeSession, error) {
+	state, err := marshalObject(input.State)
+	if err != nil {
+		return PracticeSession{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `
+		update practice_sessions
+		set state = coalesce(state, '{}'::jsonb) || $3::jsonb
+		where id = $1::uuid and user_id = $2::uuid and deleted_at is null
+	`, sessionID, userID, state)
+	if err != nil {
+		return PracticeSession{}, mapError(err)
+	}
+	if err := requireAffected(result); err != nil {
 		return PracticeSession{}, err
 	}
 	return s.GetSession(ctx, userID, sessionID)
@@ -220,11 +443,25 @@ func (s PostgresStore) FinishSession(ctx context.Context, userID string, session
 	if err != nil {
 		return PracticeSession{}, mapError(err)
 	}
-	if err := requireAffected(result); err != nil {
-		return PracticeSession{}, err
+
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return PracticeSession{}, mapError(err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	if updated == 0 {
+		var status string
+		if err := tx.QueryRowContext(ctx, `
+			select status
+			from practice_sessions
+			where id = $1::uuid and user_id = $2::uuid and deleted_at is null
+		`, sessionID, userID).Scan(&status); err != nil {
+			return PracticeSession{}, mapError(err)
+		}
+		if status != StatusCompleted {
+			return PracticeSession{}, ErrNotFound
+		}
+	} else if _, err := tx.ExecContext(ctx, `
 		update session_parts
 		set status = 'completed', completed_at = coalesce(completed_at, now())
 		where session_id = $1::uuid and status <> 'completed'
@@ -945,6 +1182,73 @@ func normalizeSessionFilter(filter SessionFilter) SessionFilter {
 	return filter
 }
 
+func normalizeSessionIDs(sessionIDs []string) []string {
+	if len(sessionIDs) == 0 {
+		return []string{}
+	}
+	items := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, item := range sessionIDs {
+		normalized := strings.TrimSpace(item)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		items = append(items, normalized)
+		if len(items) >= 200 {
+			break
+		}
+	}
+	return items
+}
+
+func buildAdminSessionContextLookup(sessionIDs []string) ([]any, string) {
+	normalizedIDs := normalizeSessionIDs(sessionIDs)
+	if len(normalizedIDs) == 0 {
+		return []any{}, ""
+	}
+
+	args := make([]any, 0, len(normalizedIDs))
+	placeholders := make([]string, 0, len(normalizedIDs))
+	for index, sessionID := range normalizedIDs {
+		args = append(args, sessionID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", index+1))
+	}
+	return args, strings.Join(placeholders, ", ")
+}
+
+func lookupOrderFromStrings(items []string) map[string]int {
+	order := make(map[string]int, len(items))
+	for index, item := range items {
+		if _, exists := order[item]; exists {
+			continue
+		}
+		order[item] = index
+	}
+	return order
+}
+
+func sortAdminUserContextsByLookup(items []AdminUserContext, order map[string]int) []AdminUserContext {
+	if len(items) <= 1 {
+		return items
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		leftOrder, leftOK := order[items[left].UserHash]
+		rightOrder, rightOK := order[items[right].UserHash]
+		if leftOK && rightOK {
+			return leftOrder < rightOrder
+		}
+		if leftOK != rightOK {
+			return leftOK
+		}
+		return items[left].UpdatedAt.After(items[right].UpdatedAt)
+	})
+	return items
+}
+
 func marshalObject(value map[string]any) ([]byte, error) {
 	if value == nil {
 		value = map[string]any{}
@@ -1065,6 +1369,147 @@ func scanPracticeSession(row rowScanner) (PracticeSession, error) {
 	item.Parts = []SessionPart{}
 	item.Turns = []SessionTurn{}
 	return item, nil
+}
+
+func scanAdminSessionContext(row rowScanner) (AdminSessionContext, error) {
+	var item AdminSessionContext
+	var userDisplayName sql.NullString
+	var seasonID sql.NullString
+	var seasonTitle sql.NullString
+	var topicID sql.NullString
+	var topicName sql.NullString
+	var targetPart sql.NullInt64
+	var state []byte
+	var startedAt sql.NullTime
+	var completedAt sql.NullTime
+	err := row.Scan(
+		&item.SessionID,
+		&item.UserID,
+		&item.UserEmail,
+		&userDisplayName,
+		&item.Mode,
+		&item.Status,
+		&seasonID,
+		&seasonTitle,
+		&topicID,
+		&topicName,
+		&targetPart,
+		&state,
+		&startedAt,
+		&completedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		return AdminSessionContext{}, mapError(err)
+	}
+	item.UserDisplayName = nullableString(userDisplayName)
+	item.SeasonID = nullableString(seasonID)
+	item.SeasonTitle = nullableString(seasonTitle)
+	item.TopicID = nullableString(topicID)
+	item.TopicName = nullableString(topicName)
+	if targetPart.Valid {
+		part := int(targetPart.Int64)
+		item.TargetPart = &part
+	}
+	item.StartedAt = nullableTime(startedAt)
+	item.CompletedAt = nullableTime(completedAt)
+	applyAdminSessionStateHints(&item, state)
+	return item, nil
+}
+
+func scanAdminUserContext(row rowScanner) (AdminUserContext, error) {
+	var item AdminUserContext
+	var userDisplayName sql.NullString
+	err := row.Scan(
+		&item.UserID,
+		&item.UserHash,
+		&item.UserEmail,
+		&userDisplayName,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		return AdminUserContext{}, mapError(err)
+	}
+	item.UserDisplayName = nullableString(userDisplayName)
+	return item, nil
+}
+
+func applyAdminSessionStateHints(item *AdminSessionContext, state []byte) {
+	if item == nil || len(state) == 0 {
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(state, &payload); err != nil {
+		return
+	}
+	item.SetupSurface = optionalString(payload["setup_surface"])
+	if item.TopicLabel == nil {
+		item.TopicLabel = topicLabelFromState(payload)
+	}
+	if item.PrimaryTopic == nil {
+		item.PrimaryTopic = primaryTopicFromState(payload)
+	}
+}
+
+func topicLabelFromState(payload map[string]any) *string {
+	if guidance, ok := payload["topic_guidance"].(map[string]any); ok {
+		if label := optionalString(guidance["topic_label"]); label != nil {
+			return label
+		}
+		if labels := stringSliceFromUnknown(guidance["topic_labels"]); len(labels) > 0 {
+			return &labels[0]
+		}
+		if primary := optionalString(guidance["primary_topic"]); primary != nil {
+			return primary
+		}
+	}
+	if labels := stringSliceFromUnknown(payload["topic_labels"]); len(labels) > 0 {
+		return &labels[0]
+	}
+	return nil
+}
+
+func primaryTopicFromState(payload map[string]any) *string {
+	if guidance, ok := payload["topic_guidance"].(map[string]any); ok {
+		if primary := optionalString(guidance["primary_topic"]); primary != nil {
+			return primary
+		}
+	}
+	return nil
+}
+
+func optionalString(value any) *string {
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	normalized := strings.TrimSpace(text)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
+}
+
+func stringSliceFromUnknown(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return []string{}
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			continue
+		}
+		normalized := strings.TrimSpace(text)
+		if normalized == "" {
+			continue
+		}
+		result = append(result, normalized)
+	}
+	return result
 }
 
 func scanPart(row rowScanner) (SessionPart, error) {

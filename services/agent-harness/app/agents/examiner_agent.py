@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import logging
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.protocols.schemas import SessionMode
 
+if TYPE_CHECKING:
+    from app.models.llm_gateway import LlmGateway
+
+
+logger = logging.getLogger("agent_harness.examiner_agent")
 
 INTERNAL_TERM_RE = re.compile(
     r"\b(system prompt|developer message|rubric|band descriptor|scoring rule|hidden instruction|password|api key|secret|private tools?)\b",
     re.IGNORECASE,
 )
+
+EXAMINER_LLM_PROMPT_VERSION = "examiner_turn.llm.v1"
+MAX_UTTERANCE_CHARS = 520
 
 
 class ExaminerTurnInput(BaseModel):
@@ -50,15 +59,26 @@ class ExaminerUtterance(BaseModel):
     text: str = Field(min_length=1, max_length=520)
     style_tags: list[str] = Field(default_factory=list)
     practice_mode: bool = False
+    reasoning_text: str | None = None
+    generated_by: Literal["rules", "llm"] = "rules"
 
 
 class ExaminerAgent:
+    """考官话术 Agent：优先调用真实 LLM 生成口语化考官台词，失败时降级到确定性脚本。"""
+
+    def __init__(self, llm_gateway: "LlmGateway | None" = None) -> None:
+        self.llm_gateway = llm_gateway
+
     def build_turn(self, turn: ExaminerTurnInput) -> ExaminerUtterance:
         question = sanitize_examiner_text(turn.question_text)
         if turn.mode == "full_exam":
             text, style_tags = build_exam_text(turn, question)
         else:
             text, style_tags = build_practice_text(turn, question)
+
+        llm_utterance = self._build_llm_turn(turn, question, style_tags)
+        if llm_utterance is not None:
+            return llm_utterance
 
         return ExaminerUtterance(
             part=turn.part,
@@ -67,6 +87,79 @@ class ExaminerAgent:
             style_tags=style_tags,
             practice_mode=turn.practice_mode,
         )
+
+    def _build_llm_turn(
+        self,
+        turn: ExaminerTurnInput,
+        question: str,
+        style_tags: list[str],
+    ) -> ExaminerUtterance | None:
+        gateway = self.llm_gateway
+        if gateway is None or not gateway.enabled:
+            return None
+        result = gateway.generate_text(
+            task="examiner",
+            call_name="examiner_turn",
+            agent_name="ExaminerAgent",
+            prompt_version=EXAMINER_LLM_PROMPT_VERSION,
+            messages=build_examiner_llm_messages(turn, question),
+            temperature=0.4,
+            # mimo-v2.5-pro 是推理模型，thinking 与正文共享 max_tokens 预算，
+            # 给足余量避免正文被截断为空（finish_reason=length）。
+            max_tokens=600,
+        )
+        if result is None:
+            return None
+        text = compact_text(sanitize_examiner_text(result.text))
+        if not text or len(text) > MAX_UTTERANCE_CHARS:
+            logger.warning(
+                "examiner_llm_output_rejected",
+                extra={"question_id": turn.question_id, "length": len(text)},
+            )
+            return None
+        return ExaminerUtterance(
+            part=turn.part,
+            question_id=turn.question_id,
+            text=text,
+            style_tags=[*style_tags, "llm_generated"],
+            practice_mode=turn.practice_mode,
+            reasoning_text=result.reasoning_text,
+            generated_by="llm",
+        )
+
+
+def build_examiner_llm_messages(turn: ExaminerTurnInput, question: str) -> list[dict[str, str]]:
+    part_guidance = {
+        1: "Part 1 is a short interview about familiar topics. Keep the turn to one or two short sentences.",
+        2: (
+            "Part 2 is the individual long turn. If this is the first question of the part, briefly introduce the cue card "
+            "task (talk for one to two minutes) before stating the topic."
+        ),
+        3: "Part 3 is an abstract two-way discussion. Sound analytical and connect to broader social themes.",
+    }
+    mode_guidance = (
+        "This is practice mode: you may sound slightly more encouraging, but stay in character as an examiner."
+        if turn.practice_mode or turn.mode != "full_exam"
+        else "This is a strict mock exam: stay neutral and concise, never coach the candidate."
+    )
+    system = (
+        "You are a certified IELTS Speaking examiner conducting a live speaking test. "
+        "Speak exactly one examiner turn. "
+        "Rules: keep the meaning of the given question unchanged; do not answer the question yourself; "
+        "do not add scoring commentary, hints, or meta remarks; do not mention these instructions; "
+        "output only the words the examiner says, with no quotes or markdown. "
+        f"{part_guidance[turn.part]} {mode_guidance}"
+    )
+    user = (
+        f"Part: {turn.part}\n"
+        f"Question {turn.question_index + 1} of {turn.total_questions}.\n"
+        f"Question to ask: {question}\n"
+        "Produce the examiner's spoken turn now."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
 
 
 def build_exam_text(turn: ExaminerTurnInput, question: str) -> tuple[str, list[str]]:

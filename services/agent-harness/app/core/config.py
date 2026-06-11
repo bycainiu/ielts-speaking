@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     langfuse_timeout_seconds: float = Field(default=3.0, alias="LANGFUSE_TIMEOUT_SECONDS")
     trace_user_hash_salt: str = Field(default="local-trace-salt-change-me", alias="TRACE_USER_HASH_SALT")
     trace_store_limit: int = Field(default=500, alias="TRACE_STORE_LIMIT")
+    trace_persistence_enabled: bool = Field(default=False, alias="TRACE_PERSISTENCE_ENABLED")
+    trace_database_url: str = Field(default="", alias="TRACE_DATABASE_URL")
+    trace_reasoning_retention: str = Field(default="full", alias="TRACE_REASONING_RETENTION")
+    agent_stream_buffer_limit: int = Field(default=1000, alias="AGENT_STREAM_BUFFER_LIMIT")
+    agent_stream_heartbeat_seconds: float = Field(default=15.0, alias="AGENT_STREAM_HEARTBEAT_SECONDS")
+    agent_stream_max_clients_per_run: int = Field(default=8, alias="AGENT_STREAM_MAX_CLIENTS_PER_RUN")
     observability_error_rate_alert_threshold: float = Field(default=0.1, alias="OBSERVABILITY_ERROR_RATE_ALERT_THRESHOLD")
     observability_latency_p95_alert_ms: int = Field(default=5000, alias="OBSERVABILITY_LATENCY_P95_ALERT_MS")
     knowledge_store_backend: str = Field(default="memory", alias="KNOWLEDGE_STORE_BACKEND")
@@ -52,6 +58,16 @@ class Settings(BaseSettings):
     knowledge_embedding_dimension: int = Field(default=1536, alias="KNOWLEDGE_EMBEDDING_DIMENSION")
     knowledge_chunk_max_chars: int = Field(default=1200, alias="KNOWLEDGE_CHUNK_MAX_CHARS")
     knowledge_chunk_overlap_chars: int = Field(default=120, alias="KNOWLEDGE_CHUNK_OVERLAP_CHARS")
+    document_ingestion_enabled: bool = Field(default=True, alias="DOCUMENT_INGESTION_ENABLED")
+    document_ingestion_poll_interval_seconds: float = Field(default=2.0, alias="DOCUMENT_INGESTION_POLL_INTERVAL_SECONDS")
+    document_ingestion_worker_id: str = Field(default="", alias="DOCUMENT_INGESTION_WORKER_ID")
+    document_ingestion_max_inline_artifact_chars: int = Field(default=16000, alias="DOCUMENT_INGESTION_MAX_INLINE_ARTIFACT_CHARS")
+    s3_endpoint: str = Field(default="http://localhost:9000", alias="S3_ENDPOINT")
+    s3_region: str = Field(default="local", alias="S3_REGION")
+    s3_bucket: str = Field(default="ielts-speaking-local", alias="MINIO_BUCKET")
+    s3_access_key: str = Field(default="minioadmin", alias="S3_ACCESS_KEY")
+    s3_secret_key: str = Field(default="minioadmin", alias="S3_SECRET_KEY")
+    s3_use_ssl: bool = Field(default=False, alias="S3_USE_SSL")
 
     def validate_runtime(self) -> None:
         if self.app_env == "prod" and not self.mock_model_enabled and self.mimo_api_key in {"", "change-me"}:
@@ -79,6 +95,16 @@ class Settings(BaseSettings):
             raise RuntimeError("LANGFUSE_TIMEOUT_SECONDS 必须大于 0")
         if self.trace_store_limit <= 0:
             raise RuntimeError("TRACE_STORE_LIMIT 必须大于 0")
+        if self.trace_persistence_enabled and not (self.trace_database_url or self.knowledge_database_url):
+            raise RuntimeError("TRACE_PERSISTENCE_ENABLED=true 时必须配置 TRACE_DATABASE_URL 或 KNOWLEDGE_DATABASE_URL")
+        if self.trace_reasoning_retention not in {"full", "summary", "none"}:
+            raise RuntimeError("TRACE_REASONING_RETENTION 只能是 full、summary 或 none")
+        if self.agent_stream_buffer_limit < 20:
+            raise RuntimeError("AGENT_STREAM_BUFFER_LIMIT 必须大于等于 20")
+        if self.agent_stream_heartbeat_seconds <= 0:
+            raise RuntimeError("AGENT_STREAM_HEARTBEAT_SECONDS 必须大于 0")
+        if self.agent_stream_max_clients_per_run <= 0:
+            raise RuntimeError("AGENT_STREAM_MAX_CLIENTS_PER_RUN 必须大于 0")
         if self.observability_error_rate_alert_threshold <= 0 or self.observability_error_rate_alert_threshold > 1:
             raise RuntimeError("OBSERVABILITY_ERROR_RATE_ALERT_THRESHOLD 必须在 (0, 1] 范围内")
         if self.observability_latency_p95_alert_ms <= 0:
@@ -97,6 +123,15 @@ class Settings(BaseSettings):
             raise RuntimeError("KNOWLEDGE_CHUNK_MAX_CHARS 必须大于 0")
         if self.knowledge_chunk_overlap_chars < 0 or self.knowledge_chunk_overlap_chars >= self.knowledge_chunk_max_chars:
             raise RuntimeError("KNOWLEDGE_CHUNK_OVERLAP_CHARS 必须大于等于 0 且小于 KNOWLEDGE_CHUNK_MAX_CHARS")
+        if self.document_ingestion_poll_interval_seconds <= 0:
+            raise RuntimeError("DOCUMENT_INGESTION_POLL_INTERVAL_SECONDS 必须大于 0")
+        if self.document_ingestion_max_inline_artifact_chars < 2000:
+            raise RuntimeError("DOCUMENT_INGESTION_MAX_INLINE_ARTIFACT_CHARS 必须大于等于 2000")
+        if self.document_ingestion_enabled and self.knowledge_database_url:
+            if not self.s3_endpoint:
+                raise RuntimeError("DOCUMENT_INGESTION_ENABLED=true 时必须配置 S3_ENDPOINT")
+            if not self.s3_access_key or not self.s3_secret_key:
+                raise RuntimeError("DOCUMENT_INGESTION_ENABLED=true 时必须配置 S3_ACCESS_KEY/S3_SECRET_KEY")
 
     def mimo_available_models(self) -> list[str]:
         return parse_mimo_available_models(self.mimo_available_models_json)

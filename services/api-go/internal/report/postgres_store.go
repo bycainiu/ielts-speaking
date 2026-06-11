@@ -113,11 +113,126 @@ func (s PostgresStore) GetLatestReport(ctx context.Context, userID string, sessi
 	return report, nil
 }
 
+func (s PostgresStore) GetLatestReportForAdmin(ctx context.Context, sessionID string) (ScoreReport, error) {
+	report, err := scanScoreReport(s.db.QueryRowContext(ctx, `
+		select sr.id::text, sr.session_id::text, sr.version, sr.status::text,
+			sr.overall_band::float8, sr.confidence::float8, sr.disclaimer,
+			sr.model_run_id, sr.raw_report, sr.created_at, sr.updated_at
+		from score_reports sr
+		join practice_sessions ps on ps.id = sr.session_id
+		where sr.session_id = $1::uuid and ps.deleted_at is null
+		order by sr.version desc, sr.created_at desc
+		limit 1
+	`, sessionID))
+	if err != nil {
+		return ScoreReport{}, mapError(err)
+	}
+	if err := s.loadReportDetails(ctx, &report); err != nil {
+		return ScoreReport{}, err
+	}
+	return report, nil
+}
+
 func (s PostgresStore) ListReports(ctx context.Context, userID string, filter ReportHistoryFilter) ([]ReportHistoryItem, error) {
 	filter = normalizeReportHistoryFilter(filter)
 	args := []any{userID}
 	conditions := []string{"ps.user_id = $1::uuid", "ps.deleted_at is null", "sr.rn = 1"}
 
+	if filter.Mode != "" {
+		args = append(args, filter.Mode)
+		conditions = append(conditions, fmt.Sprintf("ps.mode = $%d::session_mode", len(args)))
+	}
+	if filter.SessionID != "" {
+		args = append(args, filter.SessionID)
+		conditions = append(conditions, fmt.Sprintf("ps.id = $%d::uuid", len(args)))
+	}
+	if filter.Part != nil {
+		args = append(args, *filter.Part)
+		conditions = append(conditions, fmt.Sprintf(`exists (
+			select 1 from session_parts sp where sp.session_id = ps.id and sp.part = $%d
+		)`, len(args)))
+	}
+	if filter.From != nil {
+		args = append(args, *filter.From)
+		conditions = append(conditions, fmt.Sprintf("sr.created_at >= $%d", len(args)))
+	}
+	if filter.To != nil {
+		args = append(args, *filter.To)
+		conditions = append(conditions, fmt.Sprintf("sr.created_at < $%d", len(args)))
+	}
+
+	args = append(args, filter.Limit, filter.Offset)
+	query := fmt.Sprintf(`
+		with ranked_reports as (
+			select sr.*, row_number() over (
+				partition by sr.session_id
+				order by sr.version desc, sr.created_at desc
+			) as rn
+			from score_reports sr
+		)
+		select
+			sr.id::text,
+			sr.session_id::text,
+			ps.user_id::text,
+			ps.mode::text,
+			ps.status::text,
+			ps.target_part,
+			sr.version,
+			sr.status::text,
+			sr.overall_band::float8,
+			sr.confidence::float8,
+			coalesce(
+				jsonb_object_agg(
+					cs.criterion::text,
+					jsonb_build_object('band', cs.band::float8, 'confidence', cs.confidence::float8)
+				) filter (where cs.id is not null),
+				'{}'::jsonb
+			) as criteria,
+			ps.created_at,
+			ps.completed_at,
+			sr.created_at,
+			sr.updated_at
+		from ranked_reports sr
+		join practice_sessions ps on ps.id = sr.session_id
+		left join criterion_scores cs on cs.report_id = sr.id
+		where %s
+		group by sr.id, sr.session_id, ps.user_id, ps.mode, ps.status, ps.target_part, sr.version,
+			sr.status, sr.overall_band, sr.confidence, ps.created_at, ps.completed_at,
+			sr.created_at, sr.updated_at
+		order by sr.created_at desc
+		limit $%d offset $%d
+	`, strings.Join(conditions, " and "), len(args)-1, len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	items := []ReportHistoryItem{}
+	for rows.Next() {
+		item, err := scanReportHistoryItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s PostgresStore) ListReportsForAdmin(ctx context.Context, filter ReportHistoryFilter) ([]ReportHistoryItem, error) {
+	filter = normalizeReportHistoryFilter(filter)
+	args := []any{}
+	conditions := []string{"ps.deleted_at is null", "sr.rn = 1"}
+
+	if filter.UserID != "" {
+		args = append(args, filter.UserID)
+		conditions = append(conditions, fmt.Sprintf("ps.user_id = $%d::uuid", len(args)))
+	}
+	if filter.SessionID != "" {
+		args = append(args, filter.SessionID)
+		conditions = append(conditions, fmt.Sprintf("ps.id = $%d::uuid", len(args)))
+	}
 	if filter.Mode != "" {
 		args = append(args, filter.Mode)
 		conditions = append(conditions, fmt.Sprintf("ps.mode = $%d::session_mode", len(args)))
@@ -149,6 +264,7 @@ func (s PostgresStore) ListReports(ctx context.Context, userID string, filter Re
 		select
 			sr.id::text,
 			sr.session_id::text,
+			ps.user_id::text,
 			ps.mode::text,
 			ps.status::text,
 			ps.target_part,
@@ -171,7 +287,7 @@ func (s PostgresStore) ListReports(ctx context.Context, userID string, filter Re
 		join practice_sessions ps on ps.id = sr.session_id
 		left join criterion_scores cs on cs.report_id = sr.id
 		where %s
-		group by sr.id, sr.session_id, ps.mode, ps.status, ps.target_part, sr.version,
+		group by sr.id, sr.session_id, ps.user_id, ps.mode, ps.status, ps.target_part, sr.version,
 			sr.status, sr.overall_band, sr.confidence, ps.created_at, ps.completed_at,
 			sr.created_at, sr.updated_at
 		order by sr.created_at desc
@@ -663,6 +779,7 @@ func scanReportHistoryItem(row rowScanner) (ReportHistoryItem, error) {
 	err := row.Scan(
 		&item.ID,
 		&item.SessionID,
+		&item.UserID,
 		&item.Mode,
 		&item.SessionStatus,
 		&targetPart,

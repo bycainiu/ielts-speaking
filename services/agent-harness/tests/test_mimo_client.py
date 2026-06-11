@@ -93,6 +93,32 @@ def test_openai_stream_yields_text_chunks() -> None:
     run(scenario())
 
 
+def test_openai_stream_parses_reasoning_and_usage() -> None:
+    stream = "\n".join(
+        [
+            'data: {"choices":[{"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{"content":" answer"},"finish_reason":null}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":7}}}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=stream)
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = MiMoChatClient(make_config(), http_client=http_client)
+            chunks = [chunk async for chunk in client.stream([{"role": "user", "content": "Think."}])]
+
+        assert chunks[0].reasoning_delta == "thinking"
+        assert chunks[1].delta == " answer"
+        assert chunks[1].usage.total_tokens == 13
+        assert chunks[1].usage.cache_read_input_tokens == 7
+
+    run(scenario())
+
+
 def test_anthropic_complete_parses_text_and_tool_use() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -127,6 +153,32 @@ def test_anthropic_complete_parses_text_and_tool_use() -> None:
         assert response.tool_calls[0]["function"]["name"] == "search_questions"
         assert json.loads(response.tool_calls[0]["function"]["arguments"]) == {"part": 1}
         assert response.usage.total_tokens == 11
+
+    run(scenario())
+
+
+def test_anthropic_stream_parses_thinking_and_cache_usage() -> None:
+    stream = "\n".join(
+        [
+            'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private chain"}}',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"visible"}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":11,"cache_read_input_tokens":23}}',
+            'data: {"type":"message_stop"}',
+        ]
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=stream)
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = MiMoChatClient(make_config(api_format="anthropic"), http_client=http_client)
+            chunks = [chunk async for chunk in client.stream([{"role": "user", "content": "Think."}])]
+
+        assert chunks[0].reasoning_delta == "private chain"
+        assert chunks[1].delta == "visible"
+        assert chunks[2].usage.cache_creation_input_tokens == 11
+        assert chunks[2].usage.cache_read_input_tokens == 23
 
     run(scenario())
 

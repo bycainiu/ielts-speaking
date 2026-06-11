@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.content.question_text import is_placeholder_question_text
 from app.rag.chunk_schema import ContentStatus, QuestionSourceType
 from app.rag.llamaindex_service import (
     KnowledgeDocument,
@@ -304,18 +305,23 @@ def build_question_document(record: QuestionBankRecord, *, active_season_id: str
         metadata["cue_card_preparation_seconds"] = record.cue_card.preparation_seconds
         metadata["cue_card_speaking_seconds"] = record.cue_card.speaking_seconds
     if record.followup_templates:
-        active_followups = [followup for followup in record.followup_templates if followup.review_status == "active"]
-        metadata["followup_count"] = len(active_followups)
-        metadata["followup_templates"] = [
-            {
-                "followup_id": followup.followup_id,
-                "part": followup.part,
-                "text": followup.text,
-                "trigger_hint": followup.trigger_hint,
-                "sort_order": followup.sort_order,
-            }
-            for followup in sorted(active_followups, key=lambda item: item.sort_order)
+        active_followups = [
+            followup
+            for followup in record.followup_templates
+            if followup.review_status == "active" and not is_placeholder_question_text(followup.text)
         ]
+        metadata["followup_count"] = len(active_followups)
+        if active_followups:
+            metadata["followup_templates"] = [
+                {
+                    "followup_id": followup.followup_id,
+                    "part": followup.part,
+                    "text": followup.text,
+                    "trigger_hint": followup.trigger_hint,
+                    "sort_order": followup.sort_order,
+                }
+                for followup in sorted(active_followups, key=lambda item: item.sort_order)
+            ]
     if active_season_id is not None:
         metadata["is_active_season"] = record.season_id == active_season_id
 
@@ -349,7 +355,11 @@ def build_question_content(record: QuestionBankRecord) -> str:
             f"{record.cue_card.preparation_seconds}s preparation, {record.cue_card.speaking_seconds}s speaking"
         )
 
-    active_followups = [followup for followup in record.followup_templates if followup.review_status == "active"]
+    active_followups = [
+        followup
+        for followup in record.followup_templates
+        if followup.review_status == "active" and not is_placeholder_question_text(followup.text)
+    ]
     if active_followups:
         followup_text = "\n".join(
             f"- {followup.text}" + (f" ({followup.trigger_hint})" if followup.trigger_hint else "")
@@ -372,6 +382,8 @@ def skip_reason(
         return "season_not_selected"
     if part is not None and record.part != part:
         return "part_not_selected"
+    if is_placeholder_question_text(record.text):
+        return "placeholder_question_text"
     return None
 
 

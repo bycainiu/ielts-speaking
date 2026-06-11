@@ -69,7 +69,7 @@ class TimerStartedPayload(PayloadModel):
 
 class AsrFinalPayload(PayloadModel):
     turn_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
+    text: str
     audio_asset_id: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
 

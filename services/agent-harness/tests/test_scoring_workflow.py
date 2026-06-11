@@ -62,6 +62,49 @@ def test_scoring_workflow_returns_retryable_error_when_no_answers_exist() -> Non
     assert response.events[0].payload["retry_node"] == "scoring_workflow"
 
 
+def test_scoring_workflow_generates_empty_report_when_transcripts_are_empty() -> None:
+    workflow = ScoringWorkflow()
+    response = workflow.score_session(
+        "session_empty_transcript",
+        ScoreSessionRequest(
+            session_state={
+                "answers": [
+                    {
+                        "turn_id": "turn_empty_001",
+                        "part": 2,
+                        "question_text": "Describe a building.",
+                        "asr_text": "",
+                        "audio_asset_id": "audio_empty_001",
+                    }
+                ]
+            }
+        ),
+    )
+
+    assert response.next_action == "finish_session"
+    assert response.state["status"] == "scored"
+    assert response.state["scoring_warning"] == "no_transcript_recognized"
+    assert "scoring_error" not in response.state
+    assert response.state["feedback_items"]
+    assert response.state["reference_answers"] == []
+    assert any(event.type == "report.ready" for event in response.events)
+
+    report = ScoreReportInput.model_validate(response.state["score_report"])
+    assert report.overall_band == 0.0
+    assert report.confidence == 0.1
+    assert report.raw_report["scoring_status"] == "unscorable"
+    assert report.raw_report["reason"] == "no_transcript_recognized"
+    assert set(report.criteria) == {
+        "fluency_coherence",
+        "lexical_resource",
+        "grammatical_range_accuracy",
+        "pronunciation",
+    }
+    assert all(score.band == 0.0 for score in report.criteria.values())
+    assert all(score.confidence == 0.1 for score in report.criteria.values())
+    assert all(score.suggestions for score in report.criteria.values())
+
+
 def answer_record() -> dict:
     return {
         "turn_id": "turn_1",

@@ -21,7 +21,29 @@ services:
       LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-true}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-https://langfuse.example.com}
       TRACE_USER_HASH_SALT: ${TRACE_USER_HASH_SALT:-replace-with-staging-trace-salt}
+      TRACE_STORE_LIMIT: ${TRACE_STORE_LIMIT:-500}
+      TRACE_PERSISTENCE_ENABLED: ${TRACE_PERSISTENCE_ENABLED:-true}
+      TRACE_DATABASE_URL: ${TRACE_DATABASE_URL:-postgres://ielts:ielts@postgres:5432/ielts_speaking?sslmode=disable}
+      TRACE_REASONING_RETENTION: ${TRACE_REASONING_RETENTION:-full}
+      AGENT_STREAM_BUFFER_LIMIT: ${AGENT_STREAM_BUFFER_LIMIT:-1000}
+      AGENT_STREAM_HEARTBEAT_SECONDS: ${AGENT_STREAM_HEARTBEAT_SECONDS:-15}
+      AGENT_STREAM_MAX_CLIENTS_PER_RUN: ${AGENT_STREAM_MAX_CLIENTS_PER_RUN:-8}
       SPEECH_ASSESSMENT_URL: ${SPEECH_ASSESSMENT_URL:-http://speech-assessment:8010}
+
+  agent-orchestrator:
+    environment:
+      APP_ENV: staging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MOCK_MODEL_ENABLED: ${MOCK_MODEL_ENABLED:-false}
+      MIMO_API_FORMAT: ${MIMO_API_FORMAT:-anthropic}
+      MIMO_DEFAULT_MODEL: ${MIMO_DEFAULT_MODEL:-mimo-v2.5-pro}
+      AGENT_HARNESS_FALLBACK_URL: ${AGENT_HARNESS_URL:-http://agent-harness:8000}
+      TRACE_USER_HASH_SALT: ${TRACE_USER_HASH_SALT:-replace-with-staging-trace-salt}
+      TRACE_PERSISTENCE_ENABLED: ${TRACE_PERSISTENCE_ENABLED:-true}
+      TRACE_DATABASE_URL: ${TRACE_DATABASE_URL:-postgres://ielts:ielts@postgres:5432/ielts_speaking?sslmode=disable}
+      TRACE_REASONING_RETENTION: ${TRACE_REASONING_RETENTION:-none}
+      ORCHESTRATOR_TOOL_LOOP_MAX_ITERATIONS: ${ORCHESTRATOR_TOOL_LOOP_MAX_ITERATIONS:-5}
+      ORCHESTRATOR_AGENT_TIMEOUT_SECONDS: ${ORCHESTRATOR_AGENT_TIMEOUT_SECONDS:-30}
 
   speech-assessment:
     environment:
@@ -38,6 +60,7 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://staging-api.example.com}
       NEXT_PUBLIC_AGENT_EVENT_SOURCE: ${NEXT_PUBLIC_AGENT_EVENT_SOURCE:-websocket}
       AGENT_HARNESS_URL: ${AGENT_HARNESS_URL:-http://agent-harness:8000}
+      AGENT_ORCHESTRATOR_URL: ${AGENT_ORCHESTRATOR_URL:-http://agent-orchestrator:8100}
 
   postgres:
     environment:

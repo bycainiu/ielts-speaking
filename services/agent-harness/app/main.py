@@ -3,7 +3,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.audio.asr_service import (
     ASR_MODEL,
@@ -14,6 +14,8 @@ from app.audio.asr_service import (
     UnsupportedAudioFormatError,
 )
 from app.audio.tts_service import TTS_MODEL, TTSService, TTSServiceError
+from app.agents.examiner_agent import ExaminerAgent
+from app.agents.followup_planner_agent import FollowupPlannerAgent
 from app.agents.score_calibrator import ScoreCalibratorInput, ScoreCalibratorOutput
 from app.agents.question_planner_agent import QuestionSetPlannerAgent
 from app.calibration_api import (
@@ -31,11 +33,23 @@ from app.calibration_api import (
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.runtime import AgentRuntime
+from app.models.llm_gateway import LlmGateway
+from app.document_ingestion import build_document_ingestion_supervisor
 from app.evals.multipa_open_response import MultiPAExperimentReport
 from app.evals.speech_calibration import SpeechCalibrationRegressionReport
-from app.observability.langfuse_client import AgentRunTrace, ObservabilityAlert, ObservabilitySummary, TraceRecorder
+from app.observability.langfuse_client import (
+    AgentRunTrace,
+    ObservabilityAlert,
+    ObservabilityRunSummary,
+    ObservabilitySummary,
+    SessionAuditDetail,
+    SessionAuditSessionSummary,
+    TraceRecorder,
+    run_summary,
+)
 from app.protocols.schemas import (
     AgentResponse,
+    AgentStreamEvent,
     ConsumeAsrRequest,
     NextTurnRequest,
     PlanRequest,
@@ -65,11 +79,31 @@ scoring_workflow = ScoringWorkflow()
 trace_recorder = TraceRecorder(settings)
 knowledge_service = LlamaIndexKnowledgeService.from_settings(settings)
 question_bank_tools = QuestionBankMcpTools(QuestionBankIndexer(knowledge_service))
-exam_workflow = ExamWorkflow(question_planner=QuestionSetPlannerAgent(question_bank_tools=question_bank_tools))
-practice_workflow = PracticeWorkflow(question_planner=QuestionSetPlannerAgent(question_bank_tools=question_bank_tools))
+llm_gateway = LlmGateway.from_settings(settings)
+exam_workflow = ExamWorkflow(
+    question_planner=QuestionSetPlannerAgent(question_bank_tools=question_bank_tools),
+    examiner_agent=ExaminerAgent(llm_gateway=llm_gateway),
+    followup_planner=FollowupPlannerAgent(llm_gateway=llm_gateway),
+)
+practice_workflow = PracticeWorkflow(
+    question_planner=QuestionSetPlannerAgent(question_bank_tools=question_bank_tools),
+    examiner_agent=ExaminerAgent(llm_gateway=llm_gateway),
+    followup_planner=FollowupPlannerAgent(llm_gateway=llm_gateway),
+)
 asr_service = AsrService(settings)
 tts_service = TTSService(settings)
+document_ingestion_supervisor = build_document_ingestion_supervisor(settings)
 logger = logging.getLogger("agent_harness.request")
+
+
+@app.on_event("startup")
+async def startup_document_ingestion() -> None:
+    await document_ingestion_supervisor.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_document_ingestion() -> None:
+    await document_ingestion_supervisor.stop()
 
 
 @app.middleware("http")
@@ -118,6 +152,7 @@ def healthz() -> dict[str, object]:
             "default_model": settings.mimo_default_model,
             "available_models": settings.mimo_available_models(),
         },
+        "llm_gateway": llm_gateway.describe(),
         "asr": {
             "model": ASR_MODEL,
             "mock_enabled": settings.mock_model_enabled,
@@ -130,12 +165,24 @@ def healthz() -> dict[str, object]:
         },
         "runtime": runtime.describe(),
         "knowledge_service": knowledge_service.describe(),
+        "document_ingestion": document_ingestion_supervisor.describe(),
     }
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def prometheus_metrics() -> PlainTextResponse:
     return PlainTextResponse(trace_recorder.prometheus_metrics(), media_type="text/plain; version=0.0.4")
+
+
+@app.get("/agent/document-ingestion/health")
+def document_ingestion_health() -> dict[str, object]:
+    return document_ingestion_supervisor.describe()
+
+
+@app.post("/agent/document-ingestion/process-next")
+async def process_next_document_ingestion_job() -> dict[str, object]:
+    processed = await document_ingestion_supervisor.process_next()
+    return {"processed": processed, "runtime": document_ingestion_supervisor.describe()}
 
 
 @app.post("/agent/sessions/{session_id}/plan", response_model=AgentResponse)
@@ -178,6 +225,44 @@ def score_session(session_id: str, request: ScoreSessionRequest) -> AgentRespons
         workflow_node="score_session",
         request=request,
         call=lambda: scoring_workflow.score_session(session_id, request),
+    )
+
+
+@app.get("/agent/runs", response_model=list[ObservabilityRunSummary])
+def list_agent_runs(
+    status: str | None = None,
+    session_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[ObservabilityRunSummary]:
+    traces = trace_recorder.list_traces(session_id=session_id, limit=limit)
+    if status:
+        if status not in {"running", "completed", "failed", "cancelled"}:
+            raise HTTPException(status_code=422, detail="status must be running, completed, failed or cancelled")
+        traces = [trace for trace in traces if trace.status == status]
+    return [run_summary(trace) for trace in traces[:limit]]
+
+
+@app.get("/agent/runs/{run_id}/events", response_model=list[AgentStreamEvent])
+def list_run_stream_events(run_id: str, after_seq: int = Query(default=0, ge=0)) -> list[AgentStreamEvent]:
+    events = trace_recorder.list_stream_events(run_id, after_seq=after_seq)
+    if not events and trace_recorder.get_trace(run_id) is None:
+        raise HTTPException(status_code=404, detail="agent run stream not found")
+    return events
+
+
+@app.get("/agent/runs/{run_id}/stream")
+async def stream_run_events(run_id: str, after_seq: int = Query(default=0, ge=0)) -> StreamingResponse:
+    existing_events = trace_recorder.list_stream_events(run_id, after_seq=0)
+    if not existing_events and trace_recorder.get_trace(run_id) is None:
+        raise HTTPException(status_code=404, detail="agent run stream not found")
+    trace_recorder.stream_broker.add_many(existing_events)
+    return StreamingResponse(
+        trace_recorder.stream_broker.sse_stream(run_id, after_seq=after_seq),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -237,6 +322,24 @@ def get_observability_alerts(
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[ObservabilityAlert]:
     return trace_recorder.query_alerts(session_id=session_id, run_id=run_id, mode=mode, limit=limit)
+
+
+@app.get("/agent/audit/sessions", response_model=list[SessionAuditSessionSummary])
+def get_audit_sessions(
+    session_id: str | None = None,
+    mode: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[SessionAuditSessionSummary]:
+    return trace_recorder.query_audit_sessions(session_id=session_id, mode=mode, status=status, limit=limit)
+
+
+@app.get("/agent/audit/sessions/{session_id}", response_model=SessionAuditDetail)
+def get_audit_session_detail(session_id: str, limit: int = Query(default=500, ge=1, le=1000)) -> SessionAuditDetail:
+    detail = trace_recorder.get_session_audit(session_id, limit=limit)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="session audit not found")
+    return detail
 
 
 @app.get("/agent/calibration/anchor-samples", response_model=AnchorSamplesResponse)

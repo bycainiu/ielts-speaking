@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/ielts-speaking/platform/services/api-go/internal/auth"
+	"github.com/ielts-speaking/platform/services/api-go/internal/quota"
 )
 
 func TestPlannedParts(t *testing.T) {
@@ -67,6 +68,26 @@ func TestHandlerCreateStartFinishSession(t *testing.T) {
 	startResponse := performJSON(router, http.MethodPost, "/api/sessions/session_001/start", nil, token)
 	if startResponse.Code != http.StatusOK {
 		t.Fatalf("start status = %d, body = %s", startResponse.Code, startResponse.Body.String())
+	}
+
+	pauseResponse := performJSON(router, http.MethodPost, "/api/sessions/session_001/pause", nil, token)
+	if pauseResponse.Code != http.StatusOK {
+		t.Fatalf("pause status = %d, body = %s", pauseResponse.Code, pauseResponse.Body.String())
+	}
+
+	resumeResponse := performJSON(router, http.MethodPost, "/api/sessions/session_001/resume", nil, token)
+	if resumeResponse.Code != http.StatusOK {
+		t.Fatalf("resume status = %d, body = %s", resumeResponse.Code, resumeResponse.Body.String())
+	}
+
+	stateResponse := performJSON(router, http.MethodPatch, "/api/sessions/session_001/state", map[string]any{
+		"state": map[string]any{
+			"current_part":   1,
+			"question_index": 0,
+		},
+	}, token)
+	if stateResponse.Code != http.StatusOK {
+		t.Fatalf("state status = %d, body = %s", stateResponse.Code, stateResponse.Body.String())
 	}
 
 	finishResponse := performJSON(router, http.MethodPost, "/api/sessions/session_001/finish", nil, token)
@@ -175,6 +196,32 @@ func TestHandlerRecordsTurnASRAudioAndMetrics(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsEmptyASRTranscript(t *testing.T) {
+	router, token := testRouter(t)
+
+	asrResponse := performJSON(router, http.MethodPost, "/api/sessions/session_001/turns/turn_001/asr-results", map[string]any{
+		"provider":   "transcript_unavailable",
+		"model":      "empty_transcript",
+		"transcript": "",
+		"raw_response": map[string]any{
+			"source":                 "agent_harness_transcribe",
+			"transcript_unavailable": true,
+		},
+	}, token)
+	if asrResponse.Code != http.StatusCreated {
+		t.Fatalf("asr status = %d, body = %s", asrResponse.Code, asrResponse.Body.String())
+	}
+	var asrBody struct {
+		ASRResult ASRResult `json:"asr_result"`
+	}
+	if err := json.Unmarshal(asrResponse.Body.Bytes(), &asrBody); err != nil {
+		t.Fatalf("decode asr response: %v", err)
+	}
+	if asrBody.ASRResult.Transcript != "" {
+		t.Fatalf("transcript = %q", asrBody.ASRResult.Transcript)
+	}
+}
+
 func TestRedactsASRRawResponse(t *testing.T) {
 	payload, err := marshalRedactedObject(map[string]any{
 		"id":            "provider_response_001",
@@ -212,7 +259,92 @@ func TestHandlerRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestHandlerAdminGetSessionRequiresOperator(t *testing.T) {
+	router, token := testRouter(t)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/session_001", nil, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandlerAdminGetSessionCanReadAnyUser(t *testing.T) {
+	operator := auth.User{ID: "operator_001", Email: "operator@example.com", Role: "operator", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token := testRouterWithUser(t, operator)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/session_foreign", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Session PracticeSession `json:"session"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode admin session: %v", err)
+	}
+	if body.Session.UserID != "foreign_user_001" {
+		t.Fatalf("admin session user = %q", body.Session.UserID)
+	}
+}
+
+func TestHandlerAdminGetSessionContextsCanReadReadableLabels(t *testing.T) {
+	operator := auth.User{ID: "operator_001", Email: "operator@example.com", Role: "operator", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token := testRouterWithUser(t, operator)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/contexts?ids=session_001,session_foreign", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var body struct {
+		Contexts []AdminSessionContext `json:"contexts"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode admin session contexts: %v", err)
+	}
+	if len(body.Contexts) != 2 {
+		t.Fatalf("contexts len = %d, want 2", len(body.Contexts))
+	}
+	if body.Contexts[0].UserEmail == "" {
+		t.Fatal("expected user_email in admin session context")
+	}
+	if body.Contexts[0].TopicLabel == nil || *body.Contexts[0].TopicLabel == "" {
+		t.Fatal("expected topic_label in admin session context")
+	}
+}
+
+func TestHandlerAdminGetUserContextsCanReadReadableUsers(t *testing.T) {
+	operator := auth.User{ID: "operator_001", Email: "operator@example.com", Role: "operator", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token := testRouterWithUser(t, operator)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/user-contexts?hashes=sha256:user-foreign,sha256:user-learner", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var body struct {
+		Contexts []AdminUserContext `json:"contexts"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode admin user contexts: %v", err)
+	}
+	if len(body.Contexts) != 2 {
+		t.Fatalf("contexts len = %d, want 2", len(body.Contexts))
+	}
+	if body.Contexts[0].UserEmail == "" {
+		t.Fatal("expected user_email in admin user context")
+	}
+	if body.Contexts[0].UserHash == "" {
+		t.Fatal("expected user_hash in admin user context")
+	}
+}
+
 func testRouter(t *testing.T) (http.Handler, string) {
+	user := auth.User{ID: "user_001", Email: "learner@example.com", Role: "user", Status: "active", CreatedAt: time.Now().UTC()}
+	return testRouterWithUser(t, user)
+}
+
+func testRouterWithUser(t *testing.T, user auth.User) (http.Handler, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -220,14 +352,13 @@ func testRouter(t *testing.T) (http.Handler, string) {
 	if err != nil {
 		t.Fatalf("NewTokenService() error = %v", err)
 	}
-	user := auth.User{ID: "user_001", Email: "learner@example.com", Role: "user", Status: "active", CreatedAt: time.Now().UTC()}
 	pair, err := tokenService.GeneratePair(user)
 	if err != nil {
 		t.Fatalf("GeneratePair() error = %v", err)
 	}
 
 	router := gin.New()
-	NewHandler(newFakeStore()).RegisterRoutes(router.Group("/api"), auth.NewAuthenticator(authStore{}, tokenService))
+	NewHandler(newFakeStore()).RegisterRoutes(router.Group("/api"), auth.NewAuthenticator(authStore{users: map[string]auth.User{user.ID: user}}, tokenService))
 	return router, "Bearer " + pair.AccessToken
 }
 
@@ -257,8 +388,77 @@ func (fakeStore) GetSession(_ context.Context, userID string, _ string) (Practic
 	return baseSession(userID, ModeFullExam, StatusCreated), nil
 }
 
+func (fakeStore) GetSessionForAdmin(context.Context, string) (PracticeSession, error) {
+	return baseSession("foreign_user_001", ModeFullExam, StatusCompleted), nil
+}
+
+func (fakeStore) GetSessionContextsForAdmin(_ context.Context, sessionIDs []string) ([]AdminSessionContext, error) {
+	items := make([]AdminSessionContext, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		item := AdminSessionContext{
+			SessionID: sessionID,
+			UserID:    "foreign_user_001",
+			UserEmail: "foreign@example.com",
+			Mode:      ModeTopicPractice,
+			Status:    StatusInProgress,
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}
+		displayName := "Foreign Learner"
+		topicLabel := "Technology"
+		primaryTopic := "technology"
+		setupSurface := "topic_practice"
+		item.UserDisplayName = &displayName
+		item.TopicLabel = &topicLabel
+		item.PrimaryTopic = &primaryTopic
+		item.SetupSurface = &setupSurface
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (fakeStore) GetUserContextsByHashForAdmin(_ context.Context, userHashes []string) ([]AdminUserContext, error) {
+	items := make([]AdminUserContext, 0, len(userHashes))
+	for _, userHash := range userHashes {
+		item := AdminUserContext{
+			UserID:    "foreign_user_001",
+			UserHash:  userHash,
+			UserEmail: "foreign@example.com",
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}
+		displayName := "Foreign Learner"
+		if userHash == "sha256:user-learner" {
+			item.UserID = "user_001"
+			item.UserEmail = "learner@example.com"
+			displayName = "Learner"
+		}
+		item.UserDisplayName = &displayName
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (fakeStore) StartSession(_ context.Context, userID string, _ string) (PracticeSession, error) {
 	return baseSession(userID, ModeFullExam, StatusInProgress), nil
+}
+
+func (fakeStore) PauseSession(_ context.Context, userID string, _ string) (PracticeSession, error) {
+	return baseSession(userID, ModeFullExam, StatusPaused), nil
+}
+
+func (fakeStore) ResumeSession(_ context.Context, userID string, _ string) (PracticeSession, error) {
+	return baseSession(userID, ModeFullExam, StatusInProgress), nil
+}
+
+func (fakeStore) UpdateSessionState(_ context.Context, userID string, _ string, input UpdateSessionStateInput) (PracticeSession, error) {
+	state, err := marshalObject(input.State)
+	if err != nil {
+		return PracticeSession{}, err
+	}
+	session := baseSession(userID, ModeFullExam, StatusInProgress)
+	session.State = state
+	return session, nil
 }
 
 func (fakeStore) CompletePart(_ context.Context, userID string, _ string, _ int) (PracticeSession, error) {
@@ -347,7 +547,9 @@ func baseSession(userID string, mode string, status string) PracticeSession {
 	return PracticeSession{ID: "session_001", UserID: userID, Mode: mode, Status: status, State: json.RawMessage(`{}`), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Parts: []SessionPart{}, Turns: []SessionTurn{}}
 }
 
-type authStore struct{}
+type authStore struct {
+	users map[string]auth.User
+}
 
 func (authStore) CreateUser(context.Context, auth.CreateUserParams) (auth.User, error) {
 	return auth.User{}, nil
@@ -357,8 +559,11 @@ func (authStore) GetUserByEmail(context.Context, string) (auth.UserWithPassword,
 	return auth.UserWithPassword{}, auth.ErrUserNotFound
 }
 
-func (authStore) GetUserByID(context.Context, string) (auth.User, error) {
-	return auth.User{ID: "user_001", Email: "learner@example.com", Role: "user", Status: "active", CreatedAt: time.Now().UTC()}, nil
+func (s authStore) GetUserByID(_ context.Context, userID string) (auth.User, error) {
+	if user, ok := s.users[userID]; ok {
+		return user, nil
+	}
+	return auth.User{}, auth.ErrUserNotFound
 }
 
 func (authStore) UpdateLastLogin(context.Context, string) error {
@@ -382,4 +587,41 @@ func performJSON(router http.Handler, method string, path string, body any, auth
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	return response
+}
+
+type fakeQuotaStore struct {
+	assertErr error
+}
+
+func (f fakeQuotaStore) AssertCanStart(_ context.Context, _, _ string) error {
+	return f.assertErr
+}
+
+func (f fakeQuotaStore) ConsumeCredits(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func TestHandlerCreateSessionQuotaExceeded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	user := auth.User{ID: "user_001", Email: "learner@example.com", Role: "user", Status: "active", CreatedAt: time.Now().UTC()}
+	tokenService, err := auth.NewTokenService(auth.TokenServiceConfig{Secret: "test-secret-must-be-at-least-32-bytes"})
+	if err != nil {
+		t.Fatalf("NewTokenService() error = %v", err)
+	}
+	pair, err := tokenService.GeneratePair(user)
+	if err != nil {
+		t.Fatalf("GeneratePair() error = %v", err)
+	}
+
+	router := gin.New()
+	NewHandler(newFakeStore(), WithQuotaStore(fakeQuotaStore{
+		assertErr: quota.Exceeded(3, 1, "free"),
+	})).RegisterRoutes(router.Group("/api"), auth.NewAuthenticator(authStore{users: map[string]auth.User{user.ID: user}}, tokenService))
+
+	response := performJSON(router, http.MethodPost, "/api/sessions", map[string]any{
+		"mode": ModeFullExam,
+	}, "Bearer "+pair.AccessToken)
+	if response.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
 }

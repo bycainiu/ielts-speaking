@@ -1,0 +1,37 @@
+# docker-compose override: adds Caddy HTTPS reverse proxy for LAN access
+#
+# Usage:
+#   1. Set LAN_HOST=<your LAN IP> in your .env file
+#   2. docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+#
+# Then visit https://<LAN_HOST> from any device on the LAN.
+# Accept the Caddy self-signed cert once in the browser (click Advanced -> Proceed).
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:80:80"      # HTTP -> auto-redirects to HTTPS (IPv4-only, avoids WSL2 wslrelay conflict on [::1])
+      - "0.0.0.0:443:443"    # HTTPS main site (IPv4-only)
+      - "0.0.0.0:9443:9443"  # HTTPS MinIO (IPv4-only)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      LAN_HOST: ${LAN_HOST:-localhost}
+    depends_on:
+      - web
+      - minio
+    networks:
+      - default
+
+  # Override: presigned MinIO URLs must be HTTPS to avoid mixed-content on HTTPS pages
+  api-go:
+    environment:
+      S3_PUBLIC_ENDPOINT: https://${LAN_HOST:-localhost}:9443
+
+volumes:
+  caddy_data:
+  caddy_config:

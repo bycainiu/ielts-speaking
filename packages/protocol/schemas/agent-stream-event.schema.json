@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ielts-speaking.local/schemas/agent-stream-event.schema.json",
+  "title": "AgentStreamEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["seq", "event_id", "run_id", "session_id", "kind", "payload", "visibility", "created_at"],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "step_id": {
+      "type": ["string", "null"]
+    },
+    "parent_id": {
+      "type": ["string", "null"]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "run.started",
+        "step.started",
+        "message.delta",
+        "reasoning.delta",
+        "tool.started",
+        "tool.delta",
+        "tool.completed",
+        "markdown.delta",
+        "question.requested",
+        "usage.updated",
+        "step.completed",
+        "run.completed",
+        "run.failed",
+        "run.cancelled",
+        "heartbeat",
+        "agent.activated",
+        "agent.thinking",
+        "agent.action",
+        "agent.tool_call",
+        "agent.tool_result",
+        "agent.message_sent",
+        "agent.message_received",
+        "agent.output",
+        "agent.deactivated",
+        "director.route_change",
+        "director.constraint_check"
+      ]
+    },
+    "phase": {
+      "type": ["string", "null"]
+    },
+    "role": {
+      "type": ["string", "null"]
+    },
+    "content_delta": {
+      "type": ["string", "null"]
+    },
+    "reasoning_delta": {
+      "type": ["string", "null"]
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "usage": {
+      "anyOf": [
+        { "$ref": "#/$defs/AgentUsageDetail" },
+        { "type": "null" }
+      ]
+    },
+    "visibility": {
+      "type": "string",
+      "enum": ["default", "admin", "reasoning", "hidden"]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "AgentUsageDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "total_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_creation_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_read_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "estimated_cost_usd": { "type": ["number", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

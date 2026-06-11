@@ -18,7 +18,9 @@ type fakeStore struct {
 	doc          KnowledgeDoc
 	prompts      []PromptVersion
 	references   []ReferenceAnswerReview
+	auditLogs    []AdminAuditLog
 	auditRecords []AdminAuditInput
+	lastAuditLogFilter AdminAuditLogFilter
 }
 
 func newFakeStore() *fakeStore {
@@ -58,12 +60,30 @@ func newFakeStore() *fakeStore {
 			CreatedAt:    now,
 		},
 	}
-	return &fakeStore{doc: doc, prompts: prompts, references: references}
+	auditLogs := []AdminAuditLog{
+		{
+			ID:         "55555555-5555-5555-5555-555555555555",
+			ActorRole:  "operator",
+			Action:     "GET /api/admin/prompts/versions",
+			Resource:   "prompt_versions",
+			Method:     http.MethodGet,
+			Path:       "/api/admin/prompts/versions",
+			StatusCode: http.StatusOK,
+			Metadata:   map[string]any{"route": "/api/admin/prompts/versions"},
+			CreatedAt:  now,
+		},
+	}
+	return &fakeStore{doc: doc, prompts: prompts, references: references, auditLogs: auditLogs}
 }
 
 func (s *fakeStore) RecordAdminAudit(_ context.Context, input AdminAuditInput) error {
 	s.auditRecords = append(s.auditRecords, input)
 	return nil
+}
+
+func (s *fakeStore) ListAdminAudits(_ context.Context, filter AdminAuditLogFilter) ([]AdminAuditLog, error) {
+	s.lastAuditLogFilter = normalizeAdminAuditLogFilter(filter)
+	return s.auditLogs, nil
 }
 
 func (s *fakeStore) CreateKnowledgeDoc(_ context.Context, input KnowledgeDocInput, actorUserID string) (KnowledgeDoc, error) {
@@ -132,6 +152,54 @@ func TestAdminOpsRoutesRequireOperatorOrAdminAndAuditForbidden(t *testing.T) {
 	record := store.auditRecords[0]
 	if record.Resource != "prompt_versions" || record.StatusCode != http.StatusForbidden || record.ActorRole != "user" {
 		t.Fatalf("audit record = %+v", record)
+	}
+}
+
+func TestAdminCanListAuditLogs(t *testing.T) {
+	router, token, _ := testRouterWithStore(t, "admin")
+
+	response := performJSON(router, http.MethodGet, "/api/admin/audit/logs?resource=prompt_versions&status_class=2", nil, token)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"logs"`) || !strings.Contains(body, `"prompt_versions"`) {
+		t.Fatalf("unexpected audit log body: %s", body)
+	}
+}
+
+func TestAdminAuditLogFiltersAreParsed(t *testing.T) {
+	router, token, store := testRouterWithStore(t, "admin")
+
+	response := performJSON(
+		router,
+		http.MethodGet,
+		"/api/admin/audit/logs?resource=prompt_versions&actor_role=operator&method=post&status_class=4&q=versions&limit=25&offset=10",
+		nil,
+		token,
+	)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if store.lastAuditLogFilter.Resource != "prompt_versions" {
+		t.Fatalf("resource filter = %q", store.lastAuditLogFilter.Resource)
+	}
+	if store.lastAuditLogFilter.ActorRole != "operator" {
+		t.Fatalf("actor role filter = %q", store.lastAuditLogFilter.ActorRole)
+	}
+	if store.lastAuditLogFilter.Method != "POST" {
+		t.Fatalf("method filter = %q", store.lastAuditLogFilter.Method)
+	}
+	if store.lastAuditLogFilter.StatusClass != 4 {
+		t.Fatalf("status class filter = %d", store.lastAuditLogFilter.StatusClass)
+	}
+	if store.lastAuditLogFilter.Query != "versions" {
+		t.Fatalf("query filter = %q", store.lastAuditLogFilter.Query)
+	}
+	if store.lastAuditLogFilter.Limit != 25 || store.lastAuditLogFilter.Offset != 10 {
+		t.Fatalf("pagination = %+v", store.lastAuditLogFilter)
 	}
 }
 

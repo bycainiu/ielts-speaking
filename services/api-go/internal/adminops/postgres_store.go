@@ -49,6 +49,61 @@ func (s PostgresStore) RecordAdminAudit(ctx context.Context, input AdminAuditInp
 	return mapError(err)
 }
 
+func (s PostgresStore) ListAdminAudits(ctx context.Context, filter AdminAuditLogFilter) ([]AdminAuditLog, error) {
+	filter = normalizeAdminAuditLogFilter(filter)
+	conditions := []string{"1 = 1"}
+	args := []any{}
+	if filter.Resource != "" {
+		args = append(args, filter.Resource)
+		conditions = append(conditions, fmt.Sprintf("resource = $%d", len(args)))
+	}
+	if filter.ActorRole != "" {
+		args = append(args, filter.ActorRole)
+		conditions = append(conditions, fmt.Sprintf("actor_role = $%d", len(args)))
+	}
+	if filter.Method != "" {
+		args = append(args, filter.Method)
+		conditions = append(conditions, fmt.Sprintf("method = $%d", len(args)))
+	}
+	if filter.StatusClass != 0 {
+		lower := filter.StatusClass * 100
+		upper := lower + 99
+		args = append(args, lower, upper)
+		conditions = append(conditions, fmt.Sprintf("status_code between $%d and $%d", len(args)-1, len(args)))
+	}
+	if filter.Query != "" {
+		args = append(args, "%"+filter.Query+"%")
+		conditions = append(
+			conditions,
+			fmt.Sprintf("(action ilike $%d or resource ilike $%d or path ilike $%d or metadata::text ilike $%d)", len(args), len(args), len(args), len(args)),
+		)
+	}
+	args = append(args, filter.Limit, filter.Offset)
+	query := fmt.Sprintf(`
+		select id::text, actor_user_id::text, actor_role, action, resource, method, path, status_code, metadata, created_at
+		from admin_audit_logs
+		where %s
+		order by created_at desc
+		limit $%d offset $%d
+	`, strings.Join(conditions, " and "), len(args)-1, len(args))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	logs := []AdminAuditLog{}
+	for rows.Next() {
+		item, err := scanAdminAuditLog(rows)
+		if err != nil {
+			return nil, err
+		}
+		logs = append(logs, item)
+	}
+	return logs, rows.Err()
+}
+
 func (s PostgresStore) CreateKnowledgeDoc(ctx context.Context, input KnowledgeDocInput, actorUserID string) (KnowledgeDoc, error) {
 	input = normalizeKnowledgeDocInput(input)
 	if err := validateKnowledgeDocInput(input); err != nil {
@@ -543,6 +598,21 @@ func normalizeReferenceAnswerFilter(filter ReferenceAnswerFilter) ReferenceAnswe
 	return filter
 }
 
+func normalizeAdminAuditLogFilter(filter AdminAuditLogFilter) AdminAuditLogFilter {
+	filter.Resource = strings.TrimSpace(filter.Resource)
+	filter.ActorRole = strings.TrimSpace(filter.ActorRole)
+	filter.Method = strings.ToUpper(strings.TrimSpace(filter.Method))
+	filter.Query = strings.TrimSpace(filter.Query)
+	filter.Limit = normalizeLimit(filter.Limit, 80)
+	if filter.StatusClass < 0 || filter.StatusClass > 5 {
+		filter.StatusClass = 0
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	return filter
+}
+
 func normalizeLimit(value int, fallback int) int {
 	if value <= 0 {
 		return fallback
@@ -722,6 +792,19 @@ func scanReferenceAnswerReview(row rowScanner) (ReferenceAnswerReview, error) {
 	item.BandTarget = nullableFloat(bandTarget)
 	item.Skeleton = decodeMap(skeleton)
 	item.PersonalizationNotes = nullableString(personalizationNotes)
+	return item, nil
+}
+
+func scanAdminAuditLog(row rowScanner) (AdminAuditLog, error) {
+	var item AdminAuditLog
+	var actorUserID sql.NullString
+	var metadata []byte
+	err := row.Scan(&item.ID, &actorUserID, &item.ActorRole, &item.Action, &item.Resource, &item.Method, &item.Path, &item.StatusCode, &metadata, &item.CreatedAt)
+	if err != nil {
+		return AdminAuditLog{}, mapError(err)
+	}
+	item.ActorUserID = nullableString(actorUserID)
+	item.Metadata = decodeMap(metadata)
 	return item, nil
 }
 

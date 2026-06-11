@@ -212,6 +212,7 @@ class ModelRouter:
         request_max_tokens = max_tokens if max_tokens is not None else route.max_tokens
         fallback = fallback_model if fallback_model is not None else route.fallback_model
 
+        yielded = False
         try:
             async for chunk in self._client.stream(
                 messages,
@@ -221,10 +222,14 @@ class ModelRouter:
                 tools=tools,
                 response_format=response_format,
             ):
+                yielded = True
                 yield chunk
             return
         except MiMoError as exc:
-            if not should_use_fallback(exc, request_model=request_model, fallback_model=fallback, allow_fallback=allow_fallback):
+            # 已经向调用方吐出过增量时禁止换模型重放，否则内容会重复累计。
+            if yielded or not should_use_fallback(
+                exc, request_model=request_model, fallback_model=fallback, allow_fallback=allow_fallback
+            ):
                 raise
 
         async for chunk in self._client.stream(

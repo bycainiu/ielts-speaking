@@ -48,17 +48,20 @@ type ScoreReport struct {
 }
 
 type ReportHistoryFilter struct {
-	Mode   string
-	Part   *int
-	From   *time.Time
-	To     *time.Time
-	Limit  int
-	Offset int
+	Mode      string
+	Part      *int
+	From      *time.Time
+	To        *time.Time
+	UserID    string
+	SessionID string
+	Limit     int
+	Offset    int
 }
 
 type ReportHistoryItem struct {
 	ID                 string          `json:"id"`
 	SessionID          string          `json:"session_id"`
+	UserID             string          `json:"user_id"`
 	Mode               string          `json:"mode"`
 	SessionStatus      string          `json:"session_status"`
 	TargetPart         *int            `json:"target_part,omitempty"`

@@ -165,6 +165,28 @@ func TestPart2QuestionRequiresCueCard(t *testing.T) {
 	}
 }
 
+func TestQuestionRejectsPlaceholderFollowupText(t *testing.T) {
+	router, token := testRouter(t, "operator")
+	response := performJSON(router, http.MethodPost, "/api/admin/question-bank/questions", map[string]any{
+		"part": 2,
+		"text": "Describe a place in your city that you enjoy visiting.",
+		"cue_card": map[string]any{
+			"prompt":        "Describe a place in your city that you enjoy visiting.",
+			"bullet_points": []string{"where it is", "what you do there"},
+		},
+		"followup_templates": []map[string]any{
+			{
+				"part": 3,
+				"text": "待补充",
+			},
+		},
+	}, token)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
 func testRouter(t *testing.T, role string) (http.Handler, string) {
 	router, token, _ := testRouterWithStore(t, role)
 	return router, token

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.observability.langfuse_client import (
     AgentRunTrace,
+    TraceLlmCall,
     TraceStep,
     TraceStore,
     TraceToolCall,
@@ -35,9 +36,9 @@ def test_observability_summary_can_filter_by_session_and_run() -> None:
     assert summary["error_rate"] == 0
     assert summary["latency"]["p95_ms"] >= 0
     assert summary["structured_output_validity_rate"] == 1
-    assert summary["input_token_count"] >= 1
-    assert summary["output_token_count"] >= 1
-    assert summary["estimated_model_cost_usd"] >= 0
+    assert summary["input_token_count"] == 0
+    assert summary["output_token_count"] == 0
+    assert summary["estimated_model_cost_usd"] == 0
     assert summary["recent_runs"][0]["session_id"] == "sess_phase9_obs"
     assert summary["recent_runs"][0]["part"] == 1
     assert summary["recent_runs"][0]["question_id"].startswith("planner_fallback_p1")
@@ -108,9 +109,9 @@ def test_alert_policy_detects_error_rate_latency_and_tool_failures() -> None:
     }
     assert summary.errors_by_code["structured_output_invalid"] == 1
     assert summary.structured_output_validity_rate == 0
-    assert summary.input_token_count == 30
-    assert summary.output_token_count == 20
-    assert summary.estimated_model_cost_usd == 0.001
+    assert summary.input_token_count == 0
+    assert summary.output_token_count == 0
+    assert summary.estimated_model_cost_usd == 0
 
 
 def test_trace_store_eviction_and_summary_are_deterministic() -> None:
@@ -157,6 +158,68 @@ def test_prometheus_metrics_include_workflow_labels() -> None:
     assert 'workflow_node="plan_session"' in metrics
     assert "agent_harness_workflow_node_latency_p95_ms" in metrics
     assert "agent_harness_structured_output_validity_rate" in metrics
+
+
+def test_recent_runs_include_user_hash_and_call_counts() -> None:
+    now = datetime.now(UTC)
+    summary = build_observability_summary(
+        [
+            AgentRunTrace(
+                run_id="run_counts",
+                session_id="sess_counts",
+                user_id_hash="sha256:test",
+                status="completed",
+                started_at=now,
+                finished_at=now,
+                steps=[
+                    TraceStep(
+                        step_id="step_counts",
+                        workflow_node="plan_session",
+                        status="completed",
+                        started_at=now,
+                        finished_at=now,
+                        llm_calls=[
+                            TraceLlmCall(
+                                llm_call_id="llm_derived_counts",
+                                call_name="derived_plan_session",
+                                status="completed",
+                                started_at=now,
+                                finished_at=now,
+                            ),
+                            TraceLlmCall(
+                                llm_call_id="llm_captured_counts",
+                                call_name="provider_plan_session",
+                                execution_kind="llm",
+                                payload_origin="captured",
+                                provider="mimo",
+                                model_name="mimo-v2.5-pro",
+                                status="completed",
+                                input_tokens=11,
+                                output_tokens=7,
+                                started_at=now,
+                                finished_at=now,
+                            )
+                        ],
+                        tool_calls=[
+                            TraceToolCall(
+                                tool_name="search_questions",
+                                status="completed",
+                                latency_ms=10,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        filters={},
+    )
+
+    recent = summary.recent_runs[0]
+    assert recent.user_id_hash == "sha256:test"
+    assert recent.llm_call_count == 1
+    assert recent.tool_call_count == 1
+    assert summary.input_token_count == 11
+    assert summary.output_token_count == 7
 
 
 def test_observability_threshold_settings_validate_runtime() -> None:

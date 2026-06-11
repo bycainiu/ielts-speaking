@@ -1,15 +1,20 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ielts-speaking/platform/services/api-go/internal/adminops"
 	"github.com/ielts-speaking/platform/services/api-go/internal/audio"
 	"github.com/ielts-speaking/platform/services/api-go/internal/auth"
+	"github.com/ielts-speaking/platform/services/api-go/internal/billing"
 	"github.com/ielts-speaking/platform/services/api-go/internal/compliance"
 	"github.com/ielts-speaking/platform/services/api-go/internal/config"
+	"github.com/ielts-speaking/platform/services/api-go/internal/knowledgeingestion"
+	"github.com/ielts-speaking/platform/services/api-go/internal/objectstore"
 	"github.com/ielts-speaking/platform/services/api-go/internal/profile"
 	"github.com/ielts-speaking/platform/services/api-go/internal/questionbank"
 	"github.com/ielts-speaking/platform/services/api-go/internal/realtime"
@@ -65,7 +70,38 @@ func NewRouterWithDB(cfg config.Config, database *sql.DB) http.Handler {
 		store := auth.NewPostgresStore(database)
 		authenticator := auth.NewAuthenticator(store, tokenService)
 		authService := auth.NewService(store, auth.NewBcryptPasswordHasher(), tokenService)
-		auth.NewHandler(authService, authenticator).RegisterRoutes(api)
+		captchaStore := auth.NewCaptchaStore(auth.CaptchaConfig{
+			TTL: time.Duration(cfg.CaptchaTTLSeconds) * time.Second,
+		})
+		emailVerification := auth.NewEmailVerificationService(
+			auth.NewMemoryEmailVerificationStore(),
+			auth.NewEmailSender(auth.SMTPEmailSenderConfig{
+				Host:     cfg.SMTPHost,
+				Port:     cfg.SMTPPort,
+				Username: cfg.SMTPUsername,
+				Password: cfg.SMTPPassword,
+				From:     cfg.SMTPFrom,
+				UseTLS:   cfg.SMTPUseTLS,
+			}),
+			auth.EmailVerificationConfig{
+				TTL:         time.Duration(cfg.EmailCodeTTLSeconds) * time.Second,
+				Cooldown:    time.Duration(cfg.EmailCodeCooldownSeconds) * time.Second,
+				MaxAttempts: cfg.EmailCodeMaxAttempts,
+				DebugCode:   cfg.EmailCodeDebug,
+			},
+		)
+		billingStore := billing.NewPostgresStore(database)
+		billing.NewHandler(billingStore).RegisterRoutes(api, authenticator)
+
+		auth.NewHandler(
+			authService,
+			authenticator,
+			auth.WithCaptchaStore(captchaStore),
+			auth.WithEmailVerification(emailVerification),
+			auth.WithUserRegisteredHook(func(ctx context.Context, userID string) error {
+				return billingStore.EnsureSignupSubscription(ctx, userID)
+			}),
+		).RegisterRoutes(api)
 
 		profileStore := profile.NewPostgresStore(database)
 		profile.NewHandler(profileStore).RegisterRoutes(api, authenticator)
@@ -79,8 +115,8 @@ func NewRouterWithDB(cfg config.Config, database *sql.DB) http.Handler {
 		complianceStore := compliance.NewPostgresStore(database)
 		compliance.NewHandler(complianceStore).RegisterRoutes(api, authenticator)
 
-		sessionStore := session.NewPostgresStore(database)
-		session.NewHandler(sessionStore).RegisterRoutes(api, authenticator)
+		sessionStore := session.NewPostgresStore(database, cfg.TraceUserHashSalt)
+		session.NewHandler(sessionStore, session.WithQuotaStore(billingStore)).RegisterRoutes(api, authenticator)
 
 		reportStore := report.NewPostgresStore(database)
 		report.NewHandler(reportStore).RegisterRoutes(api, authenticator)
@@ -89,7 +125,7 @@ func NewRouterWithDB(cfg config.Config, database *sql.DB) http.Handler {
 		realtimeAccess := realtime.NewPostgresSessionAccessStore(database)
 		realtime.NewHandler(realtimeHub, realtimeAccess, authenticator).RegisterRoutes(api)
 
-		objectStore, err := audio.NewMinIOObjectStore(audio.MinIOConfig{
+		objectStore, err := objectstore.NewMinIOObjectStore(objectstore.MinIOConfig{
 			Endpoint:       cfg.S3Endpoint,
 			PublicEndpoint: cfg.S3PublicEndpoint,
 			AccessKey:      cfg.S3AccessKey,
@@ -108,6 +144,10 @@ func NewRouterWithDB(cfg config.Config, database *sql.DB) http.Handler {
 			TTSProvider:   audio.NewAgentHarnessTTSClient(cfg.AgentHarnessURL),
 		})
 		audio.NewHandler(audioService, cfg.AudioMaxBytes).RegisterRoutes(api, authenticator)
+
+		knowledgeStore := knowledgeingestion.NewPostgresStore(database)
+		knowledgeService := knowledgeingestion.NewService(knowledgeStore, objectStore, cfg.S3Bucket, cfg.KnowledgeMaxUploadBytes)
+		knowledgeingestion.NewHandler(knowledgeService, cfg.KnowledgeMaxUploadBytes).RegisterRoutes(api, authenticator)
 	}
 
 	return router

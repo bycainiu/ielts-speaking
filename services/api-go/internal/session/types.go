@@ -13,6 +13,7 @@ const (
 	StatusCreated    = "created"
 	StatusPlanned    = "planned"
 	StatusInProgress = "in_progress"
+	StatusPaused     = "paused"
 	StatusScoring    = "scoring"
 	StatusCompleted  = "completed"
 	StatusCancelled  = "cancelled"
@@ -43,6 +44,36 @@ type PracticeSession struct {
 	UpdatedAt   time.Time       `json:"updated_at"`
 	Parts       []SessionPart   `json:"parts"`
 	Turns       []SessionTurn   `json:"turns"`
+}
+
+type AdminSessionContext struct {
+	SessionID       string     `json:"session_id"`
+	UserID          string     `json:"user_id"`
+	UserEmail       string     `json:"user_email"`
+	UserDisplayName *string    `json:"user_display_name,omitempty"`
+	Mode            string     `json:"mode"`
+	Status          string     `json:"status"`
+	SeasonID        *string    `json:"season_id,omitempty"`
+	SeasonTitle     *string    `json:"season_title,omitempty"`
+	TopicID         *string    `json:"topic_id,omitempty"`
+	TopicName       *string    `json:"topic_name,omitempty"`
+	TopicLabel      *string    `json:"topic_label,omitempty"`
+	PrimaryTopic    *string    `json:"primary_topic,omitempty"`
+	SetupSurface    *string    `json:"setup_surface,omitempty"`
+	TargetPart      *int       `json:"target_part,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+type AdminUserContext struct {
+	UserID          string    `json:"user_id"`
+	UserHash        string    `json:"user_hash"`
+	UserEmail       string    `json:"user_email"`
+	UserDisplayName *string   `json:"user_display_name,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type SessionPart struct {
@@ -132,6 +163,10 @@ type CreateSessionInput struct {
 	State      map[string]any `json:"state"`
 }
 
+type UpdateSessionStateInput struct {
+	State map[string]any `json:"state" binding:"required"`
+}
+
 type SessionFilter struct {
 	Mode   string
 	Status string
@@ -172,7 +207,7 @@ type ASRResultInput struct {
 	AudioAssetID *string          `json:"audio_asset_id"`
 	Provider     string           `json:"provider" binding:"required,max=80"`
 	Model        string           `json:"model" binding:"required,max=120"`
-	Transcript   string           `json:"transcript" binding:"required,min=1"`
+	Transcript   string           `json:"transcript"`
 	Confidence   *float64         `json:"confidence" binding:"omitempty,min=0,max=1"`
 	Segments     []map[string]any `json:"segments"`
 	RawResponse  map[string]any   `json:"raw_response"`

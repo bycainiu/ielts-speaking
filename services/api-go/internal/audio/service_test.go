@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -388,7 +389,7 @@ func TestServiceSignedURLCapsExpires(t *testing.T) {
 		Now:    func() time.Time { return now },
 	})
 
-	result, err := service.SignedURL(context.Background(), "user_001", "audio_001", MaxSignedURLSeconds+999)
+	result, err := service.SignedURL(context.Background(), "user_001", "audio_001", MaxSignedURLSeconds+999, "192.168.1.100")
 	if err != nil {
 		t.Fatalf("SignedURL() error = %v", err)
 	}
@@ -398,8 +399,18 @@ func TestServiceSignedURLCapsExpires(t *testing.T) {
 	if !result.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("ExpiresAt = %s, want %s", result.ExpiresAt, now.Add(time.Hour))
 	}
+	if objects.presignPublicHostname != "192.168.1.100" {
+		t.Fatalf("presignPublicHostname = %q, want 192.168.1.100", objects.presignPublicHostname)
+	}
 	if result.SignedURL == "" {
 		t.Fatal("SignedURL() returned empty url")
+	}
+	parsed, err := url.Parse(result.SignedURL)
+	if err != nil {
+		t.Fatalf("parse signed url: %v", err)
+	}
+	if parsed.Host != "192.168.1.100:9000" {
+		t.Fatalf("signed url host = %q, want 192.168.1.100:9000", parsed.Host)
 	}
 }
 
@@ -542,18 +553,20 @@ func (s *fakeStore) CleanupExpiredTTSCache(context.Context, time.Time) (int, err
 }
 
 type fakeObjectStore struct {
-	ensureErr      error
-	putErr         error
-	presignErr     error
-	ensureCalls    int
-	putCalls       int
-	presignCalls   int
-	putBucket      string
-	putKey         string
-	putContentType string
-	putSize        int64
-	putData        []byte
-	presignExpires time.Duration
+	ensureErr             error
+	putErr                error
+	presignErr            error
+	presignURL            string
+	ensureCalls           int
+	putCalls              int
+	presignCalls          int
+	putBucket             string
+	putKey                string
+	putContentType        string
+	putSize               int64
+	putData               []byte
+	presignExpires        time.Duration
+	presignPublicHostname string
 }
 
 func (s *fakeObjectStore) EnsureBucket(context.Context, string) error {
@@ -575,13 +588,21 @@ func (s *fakeObjectStore) PutObject(_ context.Context, bucket string, key string
 	return s.putErr
 }
 
-func (s *fakeObjectStore) PresignedGetObject(_ context.Context, bucket string, key string, expires time.Duration) (string, error) {
+func (s *fakeObjectStore) PresignedGetObject(_ context.Context, bucket string, key string, expires time.Duration, publicHostname string) (string, error) {
 	s.presignCalls++
 	s.presignExpires = expires
+	s.presignPublicHostname = publicHostname
 	if s.presignErr != nil {
 		return "", s.presignErr
 	}
-	return "http://storage.local/" + bucket + "/" + key, nil
+	if s.presignURL != "" {
+		return s.presignURL, nil
+	}
+	host := "storage.local:9000"
+	if publicHostname != "" {
+		host = publicHostname + ":9000"
+	}
+	return "http://" + host + "/" + bucket + "/" + key, nil
 }
 
 type fakeTTSProvider struct {

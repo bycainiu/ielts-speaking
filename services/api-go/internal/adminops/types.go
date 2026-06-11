@@ -35,6 +35,29 @@ type AdminAuditInput struct {
 	Metadata    map[string]any `json:"metadata"`
 }
 
+type AdminAuditLog struct {
+	ID          string         `json:"id"`
+	ActorUserID *string        `json:"actor_user_id,omitempty"`
+	ActorRole   string         `json:"actor_role"`
+	Action      string         `json:"action"`
+	Resource    string         `json:"resource"`
+	Method      string         `json:"method"`
+	Path        string         `json:"path"`
+	StatusCode  int            `json:"status_code"`
+	Metadata    map[string]any `json:"metadata"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+type AdminAuditLogFilter struct {
+	Resource    string
+	ActorRole   string
+	Method      string
+	StatusClass int
+	Query       string
+	Limit       int
+	Offset      int
+}
+
 type KnowledgeDoc struct {
 	ID             string         `json:"id"`
 	DocType        string         `json:"doc_type"`

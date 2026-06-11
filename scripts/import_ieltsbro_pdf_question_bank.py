@@ -63,6 +63,22 @@ BULLET_START_RE = re.compile(
     r"^(What|Where|When|Who|Whom|Why|How|Whether|Which|And|If|To whom|With whom)\b",
     re.IGNORECASE,
 )
+PLACEHOLDER_NUMBERING_RE = re.compile(r"^\d+[\.\):：、-]*\s*")
+PLACEHOLDER_LABEL_RE = re.compile(r"^(question|follow-?up(?: question)?|part \d+)\s*[:：-]\s*", re.IGNORECASE)
+PLACEHOLDER_WHITESPACE_RE = re.compile(r"\s+")
+PLACEHOLDER_EXACT = {
+    "待补充",
+    "待完善",
+    "待填写",
+    "待确认",
+    "todo",
+    "tbd",
+    "placeholder",
+    "to be added",
+    "to be completed",
+    "to be filled",
+}
+PLACEHOLDER_PREFIX = ("待补充", "待完善", "todo", "tbd", "placeholder")
 
 
 @dataclass
@@ -273,6 +289,30 @@ def normalize_line(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
 
 
+def normalize_question_text(value: str) -> str:
+    text = PLACEHOLDER_WHITESPACE_RE.sub(" ", value.strip())
+    if not text:
+        return ""
+    text = text.strip("\"'`“”‘’《》「」『』()[]{}")
+    text = PLACEHOLDER_LABEL_RE.sub("", text)
+    text = PLACEHOLDER_NUMBERING_RE.sub("", text)
+    text = text.strip("\"'`“”‘’《》「」『』()[]{}")
+    text = text.rstrip(" .?!？！。,:：;；\"'`“”‘’")
+    return PLACEHOLDER_WHITESPACE_RE.sub(" ", text).strip().lower()
+
+
+def is_placeholder_question_text(value: str) -> bool:
+    normalized = normalize_question_text(value)
+    if not normalized:
+        return False
+    if normalized in PLACEHOLDER_EXACT:
+        return True
+    return any(
+        normalized.startswith(f"{prefix}:") or normalized.startswith(f"{prefix} ")
+        for prefix in PLACEHOLDER_PREFIX
+    )
+
+
 def detect_region_heading(line: str) -> tuple[str, str, str] | None:
     if re.match(r"^一、", line):
         return "mainland", "new", "新题"
@@ -318,7 +358,7 @@ def build_question_records(groups: list[PdfTopicGroup]) -> list[QuestionRecord]:
             continue
 
         cue_prompt, cue_bullet_points = parse_cue_card(group.raw_cue_card)
-        followups = merge_question_lines(group.raw_part3)
+        followups = filter_followup_questions(group.raw_part3)
         part2_key = f"{group.source_group_id}-part2"
         records.append(
             QuestionRecord(
@@ -346,7 +386,7 @@ def build_question_records(groups: list[PdfTopicGroup]) -> list[QuestionRecord]:
                 )
             )
 
-    validate_records(records)
+    validate_records(records, groups)
     return records
 
 
@@ -361,6 +401,10 @@ def merge_question_lines(lines: list[str]) -> list[str]:
     if current:
         questions.append(current)
     return questions
+
+
+def filter_followup_questions(lines: list[str]) -> list[str]:
+    return [item for item in merge_question_lines(lines) if not is_placeholder_question_text(item)]
 
 
 def parse_cue_card(lines: list[str]) -> tuple[str, list[str]]:
@@ -378,12 +422,15 @@ def parse_cue_card(lines: list[str]) -> tuple[str, list[str]]:
     return prompt, bullets
 
 
-def validate_records(records: list[QuestionRecord]) -> None:
+def validate_records(records: list[QuestionRecord], groups: list[PdfTopicGroup]) -> None:
     part_counts = {1: 0, 2: 0, 3: 0}
     for record in records:
         part_counts[record.part] += 1
-    if part_counts != {1: 273, 2: 62, 3: 351}:
-        raise RuntimeError(f"PDF 题目数量异常: {part_counts}")
+    skipped_placeholder_part3 = count_placeholder_part3_questions(groups)
+    if part_counts[1] != 273 or part_counts[2] != 62 or part_counts[3] + skipped_placeholder_part3 != 351:
+        raise RuntimeError(
+            f"PDF 题目数量异常: kept={part_counts}, skipped_placeholder_part3={skipped_placeholder_part3}"
+        )
 
 
 def summarize(groups: list[PdfTopicGroup], records: list[QuestionRecord]) -> dict[str, Any]:
@@ -397,15 +444,27 @@ def summarize(groups: list[PdfTopicGroup], records: list[QuestionRecord]) -> dic
         key = f"part{record.part}_question_count"
         part_counts[key] = part_counts.get(key, 0) + 1
 
+    skipped_placeholder_part3 = count_placeholder_part3_questions(groups)
     return {
         "topic_group_count": len(groups),
         "part1_topic_group_count": sum(1 for group in groups if group.part == 1),
         "part2_topic_group_count": sum(1 for group in groups if group.part == 2),
         "question_record_count": len(records),
         **part_counts,
+        "part3_placeholder_skipped_count": skipped_placeholder_part3,
         "group_counts": group_counts,
         "coverage_note": "PDF 题库正文全量解析；Part 2 题卡保留为 Part 2 题目，同时将 P3 追问作为 followup_templates 和独立 Part 3 题目入库。",
     }
+
+
+def count_placeholder_part3_questions(groups: list[PdfTopicGroup]) -> int:
+    return sum(
+        1
+        for group in groups
+        if group.part == 2
+        for question in merge_question_lines(group.raw_part3)
+        if is_placeholder_question_text(question)
+    )
 
 
 def group_to_json(group: PdfTopicGroup) -> dict[str, Any]:
@@ -519,6 +578,7 @@ on conflict (code) do update set
     )
     if archive_public_web:
         values.append(archive_public_web_sql(season_id))
+    values.append(archive_placeholder_question_sql(season_id))
 
     for slug, name in sorted(categories_for_records(records).items()):
         values.append(
@@ -590,6 +650,45 @@ where t.deleted_at is null
         and q.deleted_at is null
         and q.review_status = 'active'
   );
+""".strip()
+
+
+def archive_placeholder_question_sql(season_id: UUID) -> str:
+    placeholder_values = ", ".join(
+        sql_text(value)
+        for value in (
+            "待补充",
+            "待完善",
+            "todo",
+            "tbd",
+            "placeholder",
+            "to be added",
+            "to be completed",
+            "to be filled",
+        )
+    )
+    return f"""
+update knowledge_docs kd
+set status = 'archived', updated_at = now()
+from questions q
+where kd.source_id = q.id
+  and kd.doc_type = 'question_bank'
+  and kd.deleted_at is null
+  and q.season_id = {sql_uuid(season_id)}
+  and q.deleted_at is null
+  and q.review_status = 'active'
+  and q.metadata->>'source' = 'ieltsbro_pdf'
+  and q.metadata->>'coverage' = 'full_pdf_extraction'
+  and lower(btrim(q.text)) in ({placeholder_values});
+
+update questions
+set review_status = 'archived', updated_at = now()
+where season_id = {sql_uuid(season_id)}
+  and deleted_at is null
+  and review_status = 'active'
+  and metadata->>'source' = 'ieltsbro_pdf'
+  and metadata->>'coverage' = 'full_pdf_extraction'
+  and lower(btrim(text)) in ({placeholder_values});
 """.strip()
 
 

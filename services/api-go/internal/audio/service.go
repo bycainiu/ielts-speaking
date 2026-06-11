@@ -217,7 +217,7 @@ func (s Service) CleanupExpiredTTSCache(ctx context.Context) (CleanupTTSCacheRes
 	return CleanupTTSCacheResult{DeletedCount: deleted}, nil
 }
 
-func (s Service) SignedURL(ctx context.Context, userID string, assetID string, expiresSeconds int) (SignedURLResult, error) {
+func (s Service) SignedURL(ctx context.Context, userID string, assetID string, expiresSeconds int, publicHostname string) (SignedURLResult, error) {
 	if expiresSeconds <= 0 {
 		expiresSeconds = DefaultSignedURLSeconds
 	}
@@ -231,7 +231,7 @@ func (s Service) SignedURL(ctx context.Context, userID string, assetID string, e
 	}
 
 	expires := time.Duration(expiresSeconds) * time.Second
-	signed, err := s.objects.PresignedGetObject(ctx, asset.StorageBucket, asset.StorageKey, expires)
+	signed, err := s.objects.PresignedGetObject(ctx, asset.StorageBucket, asset.StorageKey, expires, publicHostname)
 	if err != nil {
 		return SignedURLResult{}, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
 	}

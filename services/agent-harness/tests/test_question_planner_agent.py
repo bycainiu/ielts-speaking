@@ -1,7 +1,19 @@
-from app.agents.question_planner_agent import QuestionSetPlannerAgent, extract_question_text
-from app.mcp.question_bank_mcp import McpSourceRef, QuestionSearchItem, SearchQuestionsResult
+from app.agents.question_planner_agent import (
+    QuestionSetPlannerAgent,
+    extract_question_text,
+    followup_questions_for_context,
+    planned_questions_from_search,
+)
+from app.mcp.question_bank_mcp import (
+    FollowupTemplateItem,
+    FollowupTemplatesResult,
+    McpSourceRef,
+    QuestionSearchItem,
+    SearchQuestionsResult,
+)
 from app.mcp.security import McpToolContext
 from app.protocols.schemas import PlanRequest
+from app.rag.llamaindex_service import KnowledgeServiceError
 
 
 def test_full_exam_question_plan_contains_all_parts_with_default_counts() -> None:
@@ -115,10 +127,51 @@ def test_topic_uuid_filters_question_bank_and_uses_topic_label_for_query() -> No
     assert plan.parts[0].questions[0].topic == "apps"
 
 
+def test_question_bank_failure_falls_back_without_crashing() -> None:
+    planner = QuestionSetPlannerAgent(FailingQuestionBankTools())
+
+    plan = planner.plan(PlanRequest(mode="part_practice", user_id="user_001", part=1))
+
+    assert plan.fallback_used is True
+    assert plan.parts[0].questions
+    assert plan.parts[0].questions[0].question_id.startswith("planner_fallback_p1")
+    assert all(question.evidence.source == "fallback_catalog" for question in plan.parts[0].questions)
+
+
 def test_extract_question_text_prefers_question_line() -> None:
     content = "Title line\nQuestion: What kind of public transport do you use?\n\nFollow-up questions:\n- Why?"
 
     assert extract_question_text(content) == "What kind of public transport do you use?"
+
+
+def test_planned_questions_from_search_skips_placeholder_question_text() -> None:
+    result = SearchQuestionsResult(
+        user_id="user_001",
+        session_id="sess_001",
+        results=[
+            make_search_item("q_valid_1", "Question: What public transport do you usually use?"),
+            make_search_item("q_placeholder", "Question: 待补充"),
+        ],
+    )
+
+    planned = planned_questions_from_search(result)
+
+    assert [question.question_id for question in planned] == ["q_valid_1"]
+
+
+def test_followup_questions_for_context_skips_placeholder_templates() -> None:
+    planned = followup_questions_for_context(
+        PlaceholderFollowupQuestionBankTools(),
+        McpToolContext(
+            user_id="user_001",
+            session_id="sess_001",
+            scopes=["question_bank:read"],
+            allowed_tools=["get_followup_templates"],
+        ),
+        {"question_id": "part2_001", "topic": "travel"},
+    )
+
+    assert [question.text for question in planned] == ["Why do some people enjoy travelling alone?"]
 
 
 class FakeQuestionBankTools:
@@ -199,10 +252,55 @@ class FakeTopicFilterQuestionBankTools:
         )
 
 
-def make_search_item(question_id: str, content: str, *, topic: str = "city") -> QuestionSearchItem:
+class FailingQuestionBankTools:
+    def search_questions(
+        self,
+        context: McpToolContext,
+        *,
+        query: str,
+        active_season_id: str | None = None,
+        part: int | None = None,
+        top_k: int = 5,
+        **_: object,
+    ) -> SearchQuestionsResult:
+        raise KnowledgeServiceError("pgvector backend requires psycopg[binary]")
+
+
+class PlaceholderFollowupQuestionBankTools:
+    def get_followup_templates(
+        self,
+        context: McpToolContext,
+        *,
+        question_id: str,
+        part: int | None = None,
+    ) -> FollowupTemplatesResult:
+        return FollowupTemplatesResult(
+            user_id=context.user_id,
+            session_id=context.session_id,
+            question_id=question_id,
+            followups=[
+                FollowupTemplateItem(
+                    followup_id="followup_valid",
+                    part=part or 3,
+                    text="Why do some people enjoy travelling alone?",
+                    sort_order=1,
+                    source_ref=McpSourceRef(doc_id=question_id, chunk_id="chunk_followup_valid"),
+                ),
+                FollowupTemplateItem(
+                    followup_id="followup_placeholder",
+                    part=part or 3,
+                    text="待补充",
+                    sort_order=2,
+                    source_ref=McpSourceRef(doc_id=question_id, chunk_id="chunk_followup_placeholder"),
+                ),
+            ],
+        )
+
+
+def make_search_item(question_id: str, content: str, *, topic: str = "city", part: int = 1) -> QuestionSearchItem:
     return QuestionSearchItem(
         question_id=question_id,
-        part=1,
+        part=part,
         topic=topic,
         season_id="season_001",
         title=f"Part 1 {topic}: {question_id}",

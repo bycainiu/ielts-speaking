@@ -78,19 +78,7 @@ class AsrService:
             )
         if not self._settings.mock_model_enabled and not (request.audio_url or request.audio_base64):
             raise MissingAudioSourceError()
-        try:
-            return await self._provider.transcribe(request, mime_type=mime_type, model=self._model)
-        except AsrUpstreamError as exc:
-            if self._settings.app_env != "prod" and not self._settings.mock_model_enabled:
-                return await MockAsrProvider(
-                    provider="fallback_mock_asr",
-                    metadata_extra={
-                        "fallback": True,
-                        "fallback_reason": exc.code,
-                        "upstream_retryable": exc.retryable,
-                    },
-                ).transcribe(request, mime_type=mime_type, model=self._model)
-            raise
+        return await self._provider.transcribe(request, mime_type=mime_type, model=self._model)
 
     def _provider_from_settings(self, settings: Settings) -> AsrProvider:
         if settings.mock_model_enabled:

@@ -119,25 +119,23 @@ async def test_asr_service_can_use_injected_provider_for_real_boundary() -> None
 
 
 @pytest.mark.asyncio
-async def test_real_asr_uses_local_fallback_when_upstream_rejects_audio_payload() -> None:
+async def test_real_asr_surfaces_upstream_failure_in_local_env() -> None:
     settings = Settings(MIMO_API_KEY="test-key", MOCK_MODEL_ENABLED=False, APP_ENV="local")
     service = AsrService(settings, provider=FailingAsrProvider())
 
-    result = await service.transcribe(
-        TranscribeAudioRequest(
-            audio_asset_id="audio_mobile_mp4",
-            mime_type="audio/mp4",
-            audio_base64="AAAA",
-            duration_ms=1800,
-            language_hint="en",
+    with pytest.raises(AsrUpstreamError) as exc:
+        await service.transcribe(
+            TranscribeAudioRequest(
+                audio_asset_id="audio_mobile_mp4",
+                mime_type="audio/mp4",
+                audio_base64="AAAA",
+                duration_ms=1800,
+                language_hint="en",
+            )
         )
-    )
 
-    assert result.provider == "fallback_mock_asr"
-    assert result.metadata["fallback"] is True
-    assert result.metadata["fallback_reason"] == "asr_upstream_error"
-    assert result.metadata["mime_type"] == "audio/mp4"
-    assert result.metadata["source_type"] == "base64"
+    assert exc.value.code == "asr_upstream_error"
+    assert exc.value.retryable is False
 
 
 @pytest.mark.asyncio

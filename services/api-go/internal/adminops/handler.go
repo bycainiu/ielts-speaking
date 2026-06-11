@@ -18,6 +18,10 @@ func NewHandler(store Store) Handler {
 }
 
 func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authenticator) {
+	audit := api.Group("/admin/audit")
+	audit.Use(auth.AuthMiddleware(authenticator), h.auditAdminAction("audit_logs"), auth.RequireRoles("operator", "admin"))
+	audit.GET("/logs", h.ListAdminAudits)
+
 	knowledge := api.Group("/admin/knowledge")
 	knowledge.Use(auth.AuthMiddleware(authenticator), h.auditAdminAction("knowledge_base"), auth.RequireRoles("operator", "admin"))
 	knowledge.GET("/docs", h.ListKnowledgeDocs)
@@ -35,6 +39,29 @@ func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authent
 	review.GET("/summary", h.ContentReviewSummary)
 	review.GET("/reference-answers", h.ListReferenceAnswers)
 	review.PUT("/reference-answers/:id/status", h.UpdateReferenceAnswerStatus)
+}
+
+func (h Handler) ListAdminAudits(c *gin.Context) {
+	items, err := h.store.ListAdminAudits(c.Request.Context(), AdminAuditLogFilter{
+		Resource:    c.Query("resource"),
+		ActorRole:   c.Query("actor_role"),
+		Method:      c.Query("method"),
+		StatusClass: intQuery(c, "status_class", 0),
+		Query:       c.Query("q"),
+		Limit:       intQuery(c, "limit", 80),
+		Offset:      intQuery(c, "offset", 0),
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"logs": items,
+		"pagination": gin.H{
+			"limit":  intQuery(c, "limit", 80),
+			"offset": intQuery(c, "offset", 0),
+		},
+	})
 }
 
 func (h Handler) auditAdminAction(resource string) gin.HandlerFunc {

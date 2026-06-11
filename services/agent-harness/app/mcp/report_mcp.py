@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from time import perf_counter
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.mcp.security import McpToolContext, authorize_tool_call
+from app.mcp.security import McpToolContext, authorize_tool_call, record_tool_execution
 from app.rag.chunk_schema import ScoringCriterion
 from app.rag.llamaindex_service import load_psycopg
 
@@ -201,18 +202,68 @@ class ReportMcpTools:
     def save_score_report(self, context: McpToolContext, *, report: ScoreReportInput | Mapping[str, Any]) -> ScoreReportSaved:
         authorize_tool_call(context, tool_name="save_score_report", required_scopes=[REPORT_WRITE_SCOPE])
         normalized = report if isinstance(report, ScoreReportInput) else ScoreReportInput.model_validate(dict(report))
-        if normalized.session_id != context.session_id:
-            raise ValueError("report.session_id must match context.session_id")
-        saved = self.store.save_score_report(user_id=context.user_id, report=normalized)
-        audit = self._audit(context, tool_name="save_score_report", target_id=saved.report_id)
-        return saved.model_copy(update={"audit_id": audit.audit_id})
+        arguments = {"report": normalized.model_dump(mode="json", exclude_none=True)}
+        started = perf_counter()
+        try:
+            if normalized.session_id != context.session_id:
+                raise ValueError("report.session_id must match context.session_id")
+            saved = self.store.save_score_report(user_id=context.user_id, report=normalized)
+            audit = self._audit(context, tool_name="save_score_report", target_id=saved.report_id)
+            result = saved.model_copy(update={"audit_id": audit.audit_id})
+        except Exception as exc:
+            record_tool_execution(
+                context,
+                tool_name="save_score_report",
+                required_scopes=[REPORT_WRITE_SCOPE],
+                status="failed",
+                arguments=arguments,
+                output_payload={"error": str(exc)},
+                reason=str(getattr(exc, "code", exc.__class__.__name__)),
+                latency_ms=max(0, int((perf_counter() - started) * 1000)),
+            )
+            raise
+        record_tool_execution(
+            context,
+            tool_name="save_score_report",
+            required_scopes=[REPORT_WRITE_SCOPE],
+            status="completed",
+            arguments=arguments,
+            output_payload=result.model_dump(mode="json", exclude_none=True),
+            latency_ms=max(0, int((perf_counter() - started) * 1000)),
+        )
+        return result
 
     def save_feedback(self, context: McpToolContext, *, feedback: FeedbackInput | Mapping[str, Any]) -> FeedbackSaved:
         authorize_tool_call(context, tool_name="save_feedback", required_scopes=[REPORT_WRITE_SCOPE])
         normalized = feedback if isinstance(feedback, FeedbackInput) else FeedbackInput.model_validate(dict(feedback))
-        saved = self.store.save_feedback(user_id=context.user_id, feedback=normalized)
-        audit = self._audit(context, tool_name="save_feedback", target_id=saved.feedback_id)
-        return saved.model_copy(update={"session_id": context.session_id, "audit_id": audit.audit_id})
+        arguments = {"feedback": normalized.model_dump(mode="json", exclude_none=True)}
+        started = perf_counter()
+        try:
+            saved = self.store.save_feedback(user_id=context.user_id, feedback=normalized)
+            audit = self._audit(context, tool_name="save_feedback", target_id=saved.feedback_id)
+            result = saved.model_copy(update={"session_id": context.session_id, "audit_id": audit.audit_id})
+        except Exception as exc:
+            record_tool_execution(
+                context,
+                tool_name="save_feedback",
+                required_scopes=[REPORT_WRITE_SCOPE],
+                status="failed",
+                arguments=arguments,
+                output_payload={"error": str(exc)},
+                reason=str(getattr(exc, "code", exc.__class__.__name__)),
+                latency_ms=max(0, int((perf_counter() - started) * 1000)),
+            )
+            raise
+        record_tool_execution(
+            context,
+            tool_name="save_feedback",
+            required_scopes=[REPORT_WRITE_SCOPE],
+            status="completed",
+            arguments=arguments,
+            output_payload=result.model_dump(mode="json", exclude_none=True),
+            latency_ms=max(0, int((perf_counter() - started) * 1000)),
+        )
+        return result
 
     def save_reference_answer(
         self,
@@ -226,9 +277,34 @@ class ReportMcpTools:
             if isinstance(reference_answer, ReferenceAnswerInput)
             else ReferenceAnswerInput.model_validate(dict(reference_answer))
         )
-        saved = self.store.save_reference_answer(user_id=context.user_id, reference_answer=normalized)
-        audit = self._audit(context, tool_name="save_reference_answer", target_id=saved.reference_answer_id)
-        return saved.model_copy(update={"session_id": context.session_id, "audit_id": audit.audit_id})
+        arguments = {"reference_answer": normalized.model_dump(mode="json", exclude_none=True)}
+        started = perf_counter()
+        try:
+            saved = self.store.save_reference_answer(user_id=context.user_id, reference_answer=normalized)
+            audit = self._audit(context, tool_name="save_reference_answer", target_id=saved.reference_answer_id)
+            result = saved.model_copy(update={"session_id": context.session_id, "audit_id": audit.audit_id})
+        except Exception as exc:
+            record_tool_execution(
+                context,
+                tool_name="save_reference_answer",
+                required_scopes=[REPORT_WRITE_SCOPE],
+                status="failed",
+                arguments=arguments,
+                output_payload={"error": str(exc)},
+                reason=str(getattr(exc, "code", exc.__class__.__name__)),
+                latency_ms=max(0, int((perf_counter() - started) * 1000)),
+            )
+            raise
+        record_tool_execution(
+            context,
+            tool_name="save_reference_answer",
+            required_scopes=[REPORT_WRITE_SCOPE],
+            status="completed",
+            arguments=arguments,
+            output_payload=result.model_dump(mode="json", exclude_none=True),
+            latency_ms=max(0, int((perf_counter() - started) * 1000)),
+        )
+        return result
 
     def _audit(self, context: McpToolContext, *, tool_name: str, target_id: str | None) -> ReportAuditRecord:
         return self.audit_sink.record(

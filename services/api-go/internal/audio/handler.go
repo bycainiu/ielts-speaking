@@ -2,8 +2,11 @@ package audio
 
 import (
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ielts-speaking/platform/services/api-go/internal/auth"
@@ -96,12 +99,97 @@ func (h Handler) CleanupExpiredTTSCache(c *gin.Context) {
 
 func (h Handler) SignedURL(c *gin.Context) {
 	expires := intQuery(c.Query("expires_seconds"), DefaultSignedURLSeconds)
-	result, err := h.service.SignedURL(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"), expires)
+	result, err := h.service.SignedURL(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"), expires, requestPublicHostname(c.Request))
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func requestPublicHostname(r *http.Request) string {
+	for _, candidate := range playbackHostCandidates(r) {
+		hostname, err := hostnameFromValue(candidate)
+		if err == nil && hostname != "" {
+			return hostname
+		}
+	}
+	return ""
+}
+
+func playbackHostCandidates(r *http.Request) []string {
+	candidates := make([]string, 0, 6)
+	candidates = appendHostHeaderValues(candidates, r.Header.Get("X-Forwarded-Host"))
+	candidates = appendHostHeaderValues(candidates, r.Header.Get("X-Original-Host"))
+	candidates = appendForwardedHeaderHosts(candidates, r.Header.Get("Forwarded"))
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		candidates = append(candidates, origin)
+	}
+	candidates = appendHostHeaderValues(candidates, r.Host)
+	return candidates
+}
+
+func appendHostHeaderValues(items []string, value string) []string {
+	for _, part := range strings.Split(value, ",") {
+		host := strings.TrimSpace(part)
+		if host != "" {
+			items = append(items, host)
+		}
+	}
+	return items
+}
+
+func appendForwardedHeaderHosts(items []string, value string) []string {
+	for _, forwarded := range strings.Split(value, ",") {
+		for _, segment := range strings.Split(forwarded, ";") {
+			key, rawValue, ok := strings.Cut(strings.TrimSpace(segment), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "host") {
+				continue
+			}
+			host := strings.Trim(strings.TrimSpace(rawValue), `"`)
+			if host != "" {
+				items = append(items, host)
+			}
+		}
+	}
+	return items
+}
+
+func hostnameFromValue(value string) (string, error) {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return "", nil
+	}
+	if !strings.Contains(normalized, "://") {
+		normalized = "http://" + normalized
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", err
+	}
+	hostname := strings.TrimSpace(parsed.Hostname())
+	if hostname == "" {
+		return "", nil
+	}
+	return strings.Trim(strings.ToLower(hostname), "[]"), nil
+}
+
+func shouldRewritePlaybackHost(hostname string) bool {
+	normalized := strings.Trim(strings.ToLower(strings.TrimSpace(hostname)), "[]")
+	if normalized == "" {
+		return false
+	}
+	if isLoopbackHostname(normalized) {
+		return true
+	}
+	if normalized == "minio" {
+		return true
+	}
+	return !strings.Contains(normalized, ".") && net.ParseIP(normalized) == nil
+}
+
+func isLoopbackHostname(hostname string) bool {
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
 }
 
 func requiredPositiveInt(value string) (*int, bool) {

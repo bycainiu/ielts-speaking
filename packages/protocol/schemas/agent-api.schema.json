@@ -44,6 +44,10 @@
         "user_background": {
           "type": "object",
           "default": {}
+        },
+        "run_id_override": {
+          "type": ["string", "null"],
+          "minLength": 1
         }
       }
     },
@@ -54,6 +58,10 @@
       "properties": {
         "session_state": {
           "type": "object"
+        },
+        "run_id_override": {
+          "type": ["string", "null"],
+          "minLength": 1
         }
       }
     },
@@ -81,6 +89,10 @@
         "session_state": {
           "type": "object",
           "default": {}
+        },
+        "run_id_override": {
+          "type": ["string", "null"],
+          "minLength": 1
         }
       }
     },

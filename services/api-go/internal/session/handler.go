@@ -1,20 +1,41 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ielts-speaking/platform/services/api-go/internal/auth"
+	"github.com/ielts-speaking/platform/services/api-go/internal/quota"
 )
+
+type QuotaStore interface {
+	AssertCanStart(ctx context.Context, userID, mode string) error
+	ConsumeCredits(ctx context.Context, userID, sessionID, mode string) error
+}
 
 type Handler struct {
 	store Store
+	quota QuotaStore
 }
 
-func NewHandler(store Store) Handler {
-	return Handler{store: store}
+type HandlerOption func(*Handler)
+
+func NewHandler(store Store, options ...HandlerOption) Handler {
+	handler := Handler{store: store}
+	for _, option := range options {
+		option(&handler)
+	}
+	return handler
+}
+
+func WithQuotaStore(quota QuotaStore) HandlerOption {
+	return func(handler *Handler) {
+		handler.quota = quota
+	}
 }
 
 func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authenticator) {
@@ -24,6 +45,9 @@ func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authent
 	group.POST("", h.CreateSession)
 	group.GET("/:id", h.GetSession)
 	group.POST("/:id/start", h.StartSession)
+	group.POST("/:id/pause", h.PauseSession)
+	group.POST("/:id/resume", h.ResumeSession)
+	group.PATCH("/:id/state", h.UpdateSessionState)
 	group.POST("/:id/parts/:part/complete", h.CompletePart)
 	group.POST("/:id/finish", h.FinishSession)
 	group.POST("/:id/cancel", h.CancelSession)
@@ -33,6 +57,12 @@ func (h Handler) RegisterRoutes(api *gin.RouterGroup, authenticator auth.Authent
 	group.POST("/:id/turns/:turn_id/asr-results", h.SaveASRResult)
 	group.PATCH("/:id/turns/:turn_id/asr-results/:asr_result_id/correction", h.CorrectASRResult)
 	group.POST("/:id/turns/:turn_id/speech-metrics", h.SaveSpeechMetrics)
+
+	admin := api.Group("/admin/sessions")
+	admin.Use(auth.AuthMiddleware(authenticator), auth.RequireRoles("operator", "admin"))
+	admin.GET("/contexts", h.AdminGetSessionContexts)
+	admin.GET("/user-contexts", h.AdminGetUserContexts)
+	admin.GET("/:id", h.AdminGetSession)
 }
 
 func (h Handler) CreateSession(c *gin.Context) {
@@ -40,7 +70,14 @@ func (h Handler) CreateSession(c *gin.Context) {
 	if !bind(c, &request) {
 		return
 	}
-	item, err := h.store.CreateSession(c.Request.Context(), auth.CurrentUserID(c), request)
+	userID := auth.CurrentUserID(c)
+	if h.quota != nil && !quota.IsPrivilegedRole(auth.CurrentRole(c)) {
+		if err := h.quota.AssertCanStart(c.Request.Context(), userID, request.Mode); err != nil {
+			writeBillingError(c, err)
+			return
+		}
+	}
+	item, err := h.store.CreateSession(c.Request.Context(), userID, request)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -71,8 +108,66 @@ func (h Handler) GetSession(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"session": item})
 }
 
+func (h Handler) AdminGetSession(c *gin.Context) {
+	item, err := h.store.GetSessionForAdmin(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": item})
+}
+
+func (h Handler) AdminGetSessionContexts(c *gin.Context) {
+	items, err := h.store.GetSessionContextsForAdmin(c.Request.Context(), csvQuery(c, "ids"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"contexts": items})
+}
+
+func (h Handler) AdminGetUserContexts(c *gin.Context) {
+	items, err := h.store.GetUserContextsByHashForAdmin(c.Request.Context(), csvQuery(c, "hashes"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"contexts": items})
+}
+
 func (h Handler) StartSession(c *gin.Context) {
 	item, err := h.store.StartSession(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": item})
+}
+
+func (h Handler) PauseSession(c *gin.Context) {
+	item, err := h.store.PauseSession(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": item})
+}
+
+func (h Handler) ResumeSession(c *gin.Context) {
+	item, err := h.store.ResumeSession(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": item})
+}
+
+func (h Handler) UpdateSessionState(c *gin.Context) {
+	var request UpdateSessionStateInput
+	if !bind(c, &request) {
+		return
+	}
+	item, err := h.store.UpdateSessionState(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"), request)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -95,10 +190,18 @@ func (h Handler) CompletePart(c *gin.Context) {
 }
 
 func (h Handler) FinishSession(c *gin.Context) {
-	item, err := h.store.FinishSession(c.Request.Context(), auth.CurrentUserID(c), c.Param("id"))
+	userID := auth.CurrentUserID(c)
+	sessionID := c.Param("id")
+	item, err := h.store.FinishSession(c.Request.Context(), userID, sessionID)
 	if err != nil {
 		writeError(c, err)
 		return
+	}
+	if h.quota != nil && !quota.IsPrivilegedRole(auth.CurrentRole(c)) {
+		if err := h.quota.ConsumeCredits(c.Request.Context(), userID, sessionID, item.Mode); err != nil {
+			writeBillingError(c, err)
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"session": item})
 }
@@ -208,6 +311,52 @@ func intQuery(c *gin.Context, key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func csvQuery(c *gin.Context, key string) []string {
+	raw := strings.TrimSpace(c.Query(key))
+	if raw == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	items := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		normalized := strings.TrimSpace(part)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		items = append(items, normalized)
+		if len(items) >= 200 {
+			break
+		}
+	}
+	return items
+}
+
+func writeBillingError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, quota.ErrQuotaExceeded):
+		if details, ok := quota.ExceededDetailsFrom(err); ok {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":     "quota_exceeded",
+				"message":   "练习额度不足，请升级套餐",
+				"required":  details.Required,
+				"remaining": details.Remaining,
+				"plan":      details.PlanSlug,
+			})
+			return
+		}
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": "quota_exceeded", "message": "练习额度不足，请升级套餐"})
+	case errors.Is(err, quota.ErrSubscriptionExpired):
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": "subscription_expired", "message": "订阅已过期，请续费"})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error", "message": "服务暂时不可用"})
+	}
 }
 
 func writeError(c *gin.Context, err error) {

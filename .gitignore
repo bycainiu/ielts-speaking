@@ -39,5 +39,10 @@ tmp/
 artifacts/
 img/
 data/
+test-results/
+tmp_state.json
+*.stackdump
+*.crt
 *.log
 *.tmp
+.ace-tool/

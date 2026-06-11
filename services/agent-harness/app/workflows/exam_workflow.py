@@ -50,7 +50,7 @@ class ExamWorkflow:
         self.followup_planner = followup_planner or FollowupPlannerAgent()
 
     def plan(self, session_id: str, request: PlanRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         question_plan = self.question_planner.plan(request)
         first_part = question_plan.target_parts[0]
         state = {
@@ -82,12 +82,7 @@ class ExamWorkflow:
                 run_id,
                 self._part_started_payload(state, first_part, part_plan),
             ),
-            build_event(
-                "examiner.message",
-                session_id,
-                run_id,
-                self._examiner_payload(state),
-            ),
+            *self._examiner_events(session_id, run_id, state),
             build_event(
                 "timer.started",
                 session_id,
@@ -99,7 +94,7 @@ class ExamWorkflow:
         return AgentResponse(run_id=run_id, events=events, state=state, next_action="wait_for_user_answer")
 
     def consume_asr(self, session_id: str, request: ConsumeAsrRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         state = self._state_for_asr(session_id, request)
         followup_plan = self._plan_followup(state, request)
         events = [
@@ -147,7 +142,7 @@ class ExamWorkflow:
         return AgentResponse(run_id=run_id, events=events, state=state, next_action=followup_plan.next_action)
 
     def next_turn(self, session_id: str, request: NextTurnRequest) -> AgentResponse:
-        run_id = new_run_id()
+        run_id = request.run_id_override or new_run_id()
         state = deepcopy(request.session_state)
         state.setdefault("current_part", 1)
         state.setdefault("question_index", 0)
@@ -217,12 +212,7 @@ class ExamWorkflow:
         current_part = int(state["current_part"])
         suggested_seconds = self._suggested_seconds(state, current_part)
         events = [
-            build_event(
-                "examiner.message",
-                session_id,
-                run_id,
-                self._examiner_payload(state),
-            ),
+            *self._examiner_events(session_id, run_id, state),
             build_event(
                 "timer.started",
                 session_id,
@@ -232,12 +222,32 @@ class ExamWorkflow:
         ]
         return AgentResponse(run_id=run_id, events=events, state=state, next_action="wait_for_user_answer")
 
-    def _examiner_payload(self, state: dict) -> dict:
+    def _examiner_events(self, session_id: str, run_id: str, state: dict) -> list:
+        utterance = self._build_examiner_utterance(state)
+        events = []
+        if utterance.reasoning_text:
+            events.append(
+                build_event(
+                    "examiner.thinking",
+                    session_id,
+                    run_id,
+                    {
+                        "part": utterance.part,
+                        "question_id": utterance.question_id,
+                        "text": utterance.reasoning_text,
+                        "generated_by": utterance.generated_by,
+                    },
+                )
+            )
+        events.append(build_event("examiner.message", session_id, run_id, self._examiner_payload(state, utterance)))
+        return events
+
+    def _build_examiner_utterance(self, state: dict):
         current_part = int(state["current_part"])
         questions = self._questions_for_state(state)
         question_index = int(state["question_index"])
         question = questions[question_index]
-        utterance = self.examiner_agent.build_turn(
+        return self.examiner_agent.build_turn(
             ExaminerTurnInput(
                 mode=state.get("mode", "full_exam"),
                 part=current_part,
@@ -248,6 +258,14 @@ class ExamWorkflow:
                 practice_mode=False,
             )
         )
+
+    def _examiner_payload(self, state: dict, utterance=None) -> dict:
+        current_part = int(state["current_part"])
+        questions = self._questions_for_state(state)
+        question_index = int(state["question_index"])
+        question = questions[question_index]
+        if utterance is None:
+            utterance = self._build_examiner_utterance(state)
         payload = {
             "part": utterance.part,
             "question_id": utterance.question_id,

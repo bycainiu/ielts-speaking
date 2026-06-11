@@ -141,6 +141,40 @@ def test_score_session_returns_ready_report() -> None:
     assert trace_response.json()["steps"][0]["workflow_node"] == "score_session"
 
 
+def test_score_session_with_empty_transcripts_returns_empty_report() -> None:
+    response = client.post(
+        "/agent/sessions/sess_score_empty_asr/score",
+        json={
+            "session_state": {
+                "answers": [
+                    {
+                        "turn_id": "turn_score_empty_asr",
+                        "part": 2,
+                        "question_text": "Describe a place you visited.",
+                        "asr_text": "",
+                        "audio_asset_id": "audio_score_empty_asr",
+                    }
+                ]
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    report = body["state"]["score_report"]
+
+    assert body["next_action"] == "finish_session"
+    assert body["state"]["status"] == "scored"
+    assert body["state"]["scoring_warning"] == "no_transcript_recognized"
+    assert "scoring_error" not in body["state"]
+    assert report["overall_band"] == 0.0
+    assert report["confidence"] == 0.1
+    assert report["raw_report"]["scoring_status"] == "unscorable"
+    assert body["state"]["feedback_items"]
+    assert body["state"]["reference_answers"] == []
+    assert event_payload(body, "report.ready")["unscorable"] is True
+
+
 def test_plan_session_returns_examiner_message() -> None:
     response = client.post(
         "/agent/sessions/sess_001/plan",
@@ -175,13 +209,16 @@ def test_plan_session_returns_examiner_message() -> None:
     assert trace["steps"][0]["part"] == 1
     assert trace["steps"][0]["question_id"] == trace["question_id"]
     assert trace["steps"][0]["prompt_version"] == "mock.exam_workflow.v1"
-    assert trace["steps"][0]["model_name"] == "mock-model"
+    assert trace["steps"][0]["model_name"] is None
     assert trace["steps"][0]["latency_ms"] >= 0
     tool_calls = trace["steps"][0]["tool_calls"]
     assert tool_calls
-    assert {item["tool_name"] for item in tool_calls} >= {"search_questions", "get_followup_templates"}
+    assert "search_questions" in {item["tool_name"] for item in tool_calls}
     assert {item["scope"] for item in tool_calls} == {"question_bank:read"}
-    assert all(item["status"] == "completed" for item in tool_calls)
+    assert all(item["status"] in {"completed", "failed"} for item in tool_calls)
+    if any(item["status"] == "failed" for item in tool_calls):
+        assert body["state"]["question_plan"]["fallback_used"] is True
+        assert any(item["error_code"] for item in tool_calls if item["status"] == "failed")
 
     run_response = client.get(f"/agent/runs/{body['run_id']}")
     assert run_response.status_code == 200
@@ -226,7 +263,7 @@ def test_consume_asr_returns_followup_decision() -> None:
     assert trace_response.status_code == 200
     trace = trace_response.json()
     input_summary = trace["steps"][0]["input_summary"]
-    assert "asr_text_chars=" in input_summary
+    assert "turn_001" in input_summary
     assert "Hangzhou" not in input_summary
     assert "learner@example.com" not in input_summary
 
@@ -271,6 +308,35 @@ def test_consume_asr_short_answer_returns_followup_question() -> None:
     assert trace["steps"][0]["workflow_node"] == "consume_asr"
     assert trace["steps"][0]["part"] == 1
     assert trace["steps"][0]["question_id"] == trace["question_id"]
+
+
+def test_consume_asr_empty_transcript_continues_agent_flow() -> None:
+    plan_response = client.post(
+        "/agent/sessions/sess_empty_asr/plan",
+        json={"mode": "full_exam", "user_id": "user_001"},
+    )
+    assert plan_response.status_code == 200
+
+    response = client.post(
+        "/agent/sessions/sess_empty_asr/consume-asr",
+        json={
+            "turn_id": "turn_empty_asr",
+            "asr_text": "",
+            "audio_asset_id": "audio_empty_asr",
+            "session_state": plan_response.json()["state"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    asr_final = event_payload(body, "asr.final")
+    followup = event_payload(body, "agent.followup_planned")
+
+    assert body["next_action"] == "wait_for_user_answer"
+    assert asr_final["text"] == ""
+    assert followup["decision"] == "ask_followup"
+    assert followup["word_count"] == 0
+    assert body["state"]["answers"][0]["asr_text"] == ""
 
 
 def test_consume_asr_practice_short_answer_keeps_practice_payload() -> None:

@@ -12,6 +12,16 @@ def test_followup_planner_asks_natural_followup_for_short_part_one_answer() -> N
     assert plan.word_count == 3
 
 
+def test_followup_planner_accepts_empty_transcript_as_zero_word_answer() -> None:
+    plan = FollowupPlannerAgent().plan(
+        FollowupPlannerInput(mode="full_exam", part=1, asr_text="", question_index=0)
+    )
+
+    assert plan.decision.decision == "ask_followup"
+    assert plan.next_action == "wait_for_user_answer"
+    assert plan.word_count == 0
+
+
 def test_followup_planner_uses_more_abstract_part_three_followup() -> None:
     plan = FollowupPlannerAgent().plan(
         FollowupPlannerInput(mode="full_exam", part=3, asr_text="Because it is useful.", question_index=0)

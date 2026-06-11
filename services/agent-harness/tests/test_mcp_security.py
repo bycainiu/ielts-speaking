@@ -5,6 +5,7 @@ from app.mcp.security import (
     McpAuthorizationError,
     McpToolContext,
     authorize_tool_call,
+    record_tool_execution,
     hash_user_id,
     reset_mcp_audit_sink,
     get_mcp_audit_sink,
@@ -138,3 +139,31 @@ def test_default_audit_sink_can_be_reset_and_used_by_existing_tools() -> None:
     assert sink.records[0].tool_name == "get_privacy_exclusions"
     reset_mcp_audit_sink()
     assert sink.records == []
+
+
+def test_record_tool_execution_keeps_arguments_output_and_latency() -> None:
+    sink = InMemoryMcpAuditSink()
+    context = McpToolContext(
+        user_id="user_001",
+        session_id="sess_001",
+        scopes=["question_bank:read"],
+        request_id="req_exec_001",
+    )
+
+    record = record_tool_execution(
+        context,
+        tool_name="search_questions",
+        required_scopes=["question_bank:read"],
+        status="completed",
+        arguments={"query": "library", "part": 1},
+        output_payload={"results": [{"question_id": "q_001"}]},
+        latency_ms=18,
+        audit_sink=sink,
+    )
+
+    assert record.phase == "execution"
+    assert record.status == "completed"
+    assert record.arguments == {"query": "library", "part": 1}
+    assert record.output_payload == {"results": [{"question_id": "q_001"}]}
+    assert record.latency_ms == 18
+    assert sink.records[0].request_id == "req_exec_001"

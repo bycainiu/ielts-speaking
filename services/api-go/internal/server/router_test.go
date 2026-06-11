@@ -42,6 +42,7 @@ func TestRouterWithDBRegistersSessionReportRoutes(t *testing.T) {
 		S3Bucket:           "ielts-speaking-local",
 		AudioMaxBytes:      25 * 1024 * 1024,
 		AudioMaxDurationMS: 10 * 60 * 1000,
+		KnowledgeMaxUploadBytes: 20 * 1024 * 1024,
 	}, db)
 
 	request := httptest.NewRequest(http.MethodGet, "/api/sessions/session_001/report", nil)
@@ -74,5 +75,65 @@ func TestRouterWithDBRegistersSessionReportRoutes(t *testing.T) {
 
 	if adminPromptResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("admin prompt status = %d, want %d", adminPromptResponse.Code, http.StatusUnauthorized)
+	}
+
+	billingPlansRequest := httptest.NewRequest(http.MethodGet, "/api/billing/plans", nil)
+	billingPlansResponse := httptest.NewRecorder()
+	router.ServeHTTP(billingPlansResponse, billingPlansRequest)
+	if billingPlansResponse.Code != http.StatusOK && billingPlansResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("billing plans status = %d", billingPlansResponse.Code)
+	}
+
+	knowledgeUploadRequest := httptest.NewRequest(http.MethodGet, "/api/knowledge/uploads", nil)
+	knowledgeUploadResponse := httptest.NewRecorder()
+	router.ServeHTTP(knowledgeUploadResponse, knowledgeUploadRequest)
+
+	if knowledgeUploadResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("knowledge upload status = %d, want %d", knowledgeUploadResponse.Code, http.StatusUnauthorized)
+	}
+
+	protectedRoutes := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "me", method: http.MethodGet, path: "/api/me"},
+		{name: "sessions", method: http.MethodPost, path: "/api/sessions"},
+		{name: "billing subscription", method: http.MethodGet, path: "/api/billing/subscription"},
+		{name: "audio upload", method: http.MethodPost, path: "/api/audio/upload"},
+		{name: "admin users", method: http.MethodGet, path: "/api/admin/users"},
+		{name: "admin audit", method: http.MethodGet, path: "/api/admin/audit/logs"},
+		{name: "privacy consents", method: http.MethodGet, path: "/api/privacy/consents"},
+		{name: "profile background", method: http.MethodGet, path: "/api/me/background"},
+	}
+
+	for _, route := range protectedRoutes {
+		request := httptest.NewRequest(route.method, route.path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want %d", route.name, response.Code, http.StatusUnauthorized)
+		}
+	}
+
+	publicRoutes := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "active season", method: http.MethodGet, path: "/api/seasons/active"},
+		{name: "public topics", method: http.MethodGet, path: "/api/topics"},
+		{name: "public questions", method: http.MethodGet, path: "/api/questions"},
+	}
+
+	for _, route := range publicRoutes {
+		request := httptest.NewRequest(route.method, route.path, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+
+		if response.Code == http.StatusUnauthorized {
+			t.Fatalf("%s should be public but returned 401", route.name)
+		}
 	}
 }

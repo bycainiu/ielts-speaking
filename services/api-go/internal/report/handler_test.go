@@ -224,6 +224,62 @@ func TestHandlerExportReportFeedbackRequiresOperator(t *testing.T) {
 	}
 }
 
+func TestHandlerAdminListReportsRequiresOperator(t *testing.T) {
+	router, token, _ := testRouter(t)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/reports", nil, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandlerAdminListReportsCanFilterAllUsers(t *testing.T) {
+	admin := auth.User{ID: "admin_001", Email: "admin@example.com", Role: "admin", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token, store := testRouterWithUser(t, admin)
+	userID := "11111111-1111-1111-1111-111111111111"
+	sessionID := "22222222-2222-2222-2222-222222222222"
+
+	response := performJSON(router, http.MethodGet, "/api/admin/reports?user_id="+userID+"&session_id="+sessionID+"&mode=full_exam&limit=10", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if store.lastAdminFilter.UserID != userID || store.lastAdminFilter.SessionID != sessionID || store.lastAdminFilter.Mode != "full_exam" {
+		t.Fatalf("admin filter = %+v", store.lastAdminFilter)
+	}
+}
+
+func TestHandlerAdminListReportsRejectsInvalidUUIDFilter(t *testing.T) {
+	admin := auth.User{ID: "admin_001", Email: "admin@example.com", Role: "admin", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token, _ := testRouterWithUser(t, admin)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/reports?session_id=not-a-uuid", nil, token)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
+func TestHandlerAdminGetLatestReportRequiresOperator(t *testing.T) {
+	router, token, _ := testRouter(t)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/session_001/report", nil, token)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandlerAdminGetLatestReportCanReadAnySession(t *testing.T) {
+	operator := auth.User{ID: "operator_001", Email: "operator@example.com", Role: "operator", Status: "active", CreatedAt: time.Now().UTC()}
+	router, token, store := testRouterWithUser(t, operator)
+
+	response := performJSON(router, http.MethodGet, "/api/admin/sessions/session_foreign/report", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if store.lastAdminReportSessionID != "session_foreign" {
+		t.Fatalf("admin report session = %q", store.lastAdminReportSessionID)
+	}
+}
+
 func TestHandlerRejectsInvalidReportFeedbackExportFilter(t *testing.T) {
 	admin := auth.User{ID: "admin_001", Email: "admin@example.com", Role: "admin", Status: "active", CreatedAt: time.Now().UTC()}
 	router, token, _ := testRouterWithUser(t, admin)
@@ -259,10 +315,12 @@ func testRouterWithUser(t *testing.T, user auth.User) (http.Handler, string, *fa
 }
 
 type fakeStore struct {
-	savedReports       []SaveReportInput
-	lastFilter         ReportHistoryFilter
-	feedback           []ReportUserFeedback
-	lastFeedbackFilter ReportFeedbackFilter
+	savedReports             []SaveReportInput
+	lastFilter               ReportHistoryFilter
+	lastAdminFilter          ReportHistoryFilter
+	lastAdminReportSessionID string
+	feedback                 []ReportUserFeedback
+	lastFeedbackFilter       ReportFeedbackFilter
 }
 
 func (s *fakeStore) SaveReport(_ context.Context, userID string, sessionID string, input SaveReportInput) (ScoreReport, error) {
@@ -286,8 +344,29 @@ func (s *fakeStore) GetLatestReport(_ context.Context, userID string, sessionID 
 	return fakeReport(userID, sessionID, s.savedReports[len(s.savedReports)-1]), nil
 }
 
+func (s *fakeStore) GetLatestReportForAdmin(_ context.Context, sessionID string) (ScoreReport, error) {
+	s.lastAdminReportSessionID = sessionID
+	if len(s.savedReports) == 0 {
+		input := SaveReportInput{}
+		payload := makeReportPayload()
+		bytes, _ := json.Marshal(payload)
+		_ = json.Unmarshal(bytes, &input)
+		input.Normalize()
+		s.savedReports = append(s.savedReports, input)
+	}
+	return fakeReport("foreign_user_001", sessionID, s.savedReports[len(s.savedReports)-1]), nil
+}
+
 func (s *fakeStore) ListReports(_ context.Context, _ string, filter ReportHistoryFilter) ([]ReportHistoryItem, error) {
 	s.lastFilter = filter
+	return []ReportHistoryItem{
+		fakeHistoryItem("report_001", "session_001", "full_exam", nil, 6.5, time.Now().Add(-24*time.Hour)),
+		fakeHistoryItem("report_002", "session_002", "part_practice", intPtr(2), 7.0, time.Now()),
+	}, nil
+}
+
+func (s *fakeStore) ListReportsForAdmin(_ context.Context, filter ReportHistoryFilter) ([]ReportHistoryItem, error) {
+	s.lastAdminFilter = filter
 	return []ReportHistoryItem{
 		fakeHistoryItem("report_001", "session_001", "full_exam", nil, 6.5, time.Now().Add(-24*time.Hour)),
 		fakeHistoryItem("report_002", "session_002", "part_practice", intPtr(2), 7.0, time.Now()),
@@ -424,6 +503,7 @@ func fakeHistoryItem(reportID string, sessionID string, mode string, targetPart 
 	return ReportHistoryItem{
 		ID:               reportID,
 		SessionID:        sessionID,
+		UserID:           "user_001",
 		Mode:             mode,
 		SessionStatus:    "completed",
 		TargetPart:       targetPart,

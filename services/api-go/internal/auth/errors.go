@@ -8,4 +8,7 @@ var (
 	ErrInvalidToken           = errors.New("invalid token")
 	ErrForbiddenUserStatus    = errors.New("forbidden user status")
 	ErrUserNotFound           = errors.New("user not found")
+	ErrInvalidCaptcha         = errors.New("invalid captcha")
+	ErrInvalidEmailCode       = errors.New("invalid email verification code")
+	ErrEmailCodeSendFailed    = errors.New("email verification code send failed")
 )

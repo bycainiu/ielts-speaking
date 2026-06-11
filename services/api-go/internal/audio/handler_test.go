@@ -163,6 +163,78 @@ func TestHandlerSignedURLReturnsReplayMetadata(t *testing.T) {
 	}
 }
 
+func TestHandlerSignedURLPassesForwardedHostForPlaybackSigning(t *testing.T) {
+	durationMS := 18000
+	store := &fakeStore{
+		getAsset: Asset{
+			ID:            "audio_001",
+			Kind:          KindExaminerTTS,
+			StorageBucket: "ielts-speaking-test",
+			StorageKey:    "sessions/session_001/turns/turn_001/examiner.wav",
+			MimeType:      "audio/wav",
+			DurationMS:    &durationMS,
+		},
+	}
+	objects := &fakeObjectStore{}
+	router, token := newAudioTestRouter(t, store, objects)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/audio/audio_001/signed-url?expires_seconds=300", nil)
+	request.Header.Set("Authorization", token)
+	request.Header.Set("X-Forwarded-Host", "192.168.1.100:3000")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body SignedURLResult
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if objects.presignPublicHostname != "192.168.1.100" {
+		t.Fatalf("presignPublicHostname = %q, want 192.168.1.100", objects.presignPublicHostname)
+	}
+	if body.SignedURL == "" {
+		t.Fatal("signed_url is empty")
+	}
+}
+
+func TestHandlerSignedURLFallsBackToRequestHostForPlaybackSigning(t *testing.T) {
+	durationMS := 18000
+	store := &fakeStore{
+		getAsset: Asset{
+			ID:            "audio_001",
+			Kind:          KindExaminerTTS,
+			StorageBucket: "ielts-speaking-test",
+			StorageKey:    "sessions/session_001/turns/turn_001/examiner.wav",
+			MimeType:      "audio/wav",
+			DurationMS:    &durationMS,
+		},
+	}
+	objects := &fakeObjectStore{}
+	router, token := newAudioTestRouter(t, store, objects)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/audio/audio_001/signed-url?expires_seconds=300", nil)
+	request.Header.Set("Authorization", token)
+	request.Host = "practice.example.com:3000"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body SignedURLResult
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if objects.presignPublicHostname != "practice.example.com" {
+		t.Fatalf("presignPublicHostname = %q, want practice.example.com", objects.presignPublicHostname)
+	}
+	if body.SignedURL == "" {
+		t.Fatal("signed_url is empty")
+	}
+}
+
 func newAudioTestRouter(t *testing.T, store Store, objects ObjectStore) (http.Handler, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

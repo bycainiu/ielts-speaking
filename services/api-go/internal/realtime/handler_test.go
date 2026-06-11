@@ -71,6 +71,54 @@ func TestConnectSessionWithQueryTokenBroadcastsEvent(t *testing.T) {
 	}
 }
 
+func TestCheckOriginAllowsSameHostDifferentPorts(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://192.168.1.100:18080/api/ws/sessions/session_001", nil)
+	request.Header.Set("Origin", "http://192.168.1.100:3000")
+
+	if !checkOrigin(request) {
+		t.Fatal("checkOrigin() rejected same hostname with different dev ports")
+	}
+}
+
+func TestCheckOriginAllowsForwardedHostFromWebProxy(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:18080/api/ws/sessions/session_001", nil)
+	request.Header.Set("Origin", "http://192.168.1.100:3000")
+	request.Header.Set("X-Forwarded-Host", "192.168.1.100:3000")
+
+	if !checkOrigin(request) {
+		t.Fatal("checkOrigin() rejected matching forwarded host from web proxy")
+	}
+}
+
+func TestCheckOriginAllowsForwardedHeaderHostFromWebProxy(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://api-go:8080/api/ws/sessions/session_001", nil)
+	request.Header.Set("Origin", "https://exam.local")
+	request.Header.Set("Forwarded", `for=10.0.0.2;proto=https;host="exam.local"`)
+
+	if !checkOrigin(request) {
+		t.Fatal("checkOrigin() rejected matching Forwarded host")
+	}
+}
+
+func TestCheckOriginRejectsDifferentHosts(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://192.168.1.100:18080/api/ws/sessions/session_001", nil)
+	request.Header.Set("Origin", "http://192.168.1.50:3000")
+
+	if checkOrigin(request) {
+		t.Fatal("checkOrigin() accepted different hostnames")
+	}
+}
+
+func TestCheckOriginRejectsDifferentForwardedHosts(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://localhost:18080/api/ws/sessions/session_001", nil)
+	request.Header.Set("Origin", "http://192.168.1.50:3000")
+	request.Header.Set("X-Forwarded-Host", "192.168.1.100:3000")
+
+	if checkOrigin(request) {
+		t.Fatal("checkOrigin() accepted different forwarded hostname")
+	}
+}
+
 func newTestServer(t *testing.T, access SessionAccessStore) (*httptest.Server, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
